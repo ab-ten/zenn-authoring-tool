@@ -95,6 +95,14 @@ Image validation for size and extension is planned, but is not required in the f
 
 Released snapshots are retained for erased articles.
 
+Each released snapshot is stored as:
+
+`/.zenn-authoring/released/<normalized-article-id>.md`
+
+`normalized-article-id` is the lowercase hex-and-dash UUID representation of `{article-id}`.
+
+Exactly one latest successful `{article-artifact}` is retained for each `{article-id}`.
+
 #### `ledger.json`
 
 `ledger.json` stores confirmed article state and unresolved publish candidates.
@@ -213,9 +221,10 @@ Only the symlink filename is adjusted to the slug-based filename expected by Zen
 
 If the source has no declared `{slug}`, preview uses the synthetic slug:
 
-`new-{article-id}`
+`new-<normalized-article-id>`
 
 This synthetic slug is used only for preview. It is not treated as the source `{slug}` and is not written back to the authoring file.
+The article-id normalization is the same lowercase hex-and-dash UUID representation used for article-id comparison / ledger keys.
 
 A source with no article ID is not treated as an article file for preview.
 
@@ -519,7 +528,9 @@ If they match:
 The ledger state is `active` and source state is `erased`.
 
 - API `404` -> `OK`, with a warning that the publication has already been deleted;
-- API `200` for the user's own publication -> compare current observation with the ledger successful Zenn observation;
+- API `200` for the user's own publication:
+  - current observation == ledger successful Zenn observation -> `OK`;
+  - current observation != ledger successful Zenn observation -> `ERROR` as remote drift.
 - API `200` for another user's publication -> `OK`, with a warning that the old slug has already been reused.
 
 Remote drift of the own-user publication is an error.
@@ -530,12 +541,13 @@ The ledger state is `erased` and source state is `active`.
 
 If the ledger slug differs from the source slug, preflight first checks the old ledger slug.
 
-The old slug must not still represent an unresolved own-user publication. Once that check is satisfied, the candidate source slug is checked.
+- API `404` -> `ERROR`; the previous confirmed slug is still available and must be used.
+- API `200` for the user's own publication -> `ERROR`; the publication is not deleted or the remote state is unexpected.
+- API `200` for another user's publication -> continue by checking the source slug.
 
-For the candidate source slug:
-
-- API `404` -> `OK`;
-- API `200` for another user's article -> `COLLISION`;
+The source slug is then checked:
+- API `404` -> `OK`.
+- API `200` for another user's publication -> `COLLISION`.
 - other results -> `ERROR`.
 
 ### `check`
@@ -580,6 +592,15 @@ Other results follow the `ERROR` / `UNKNOWN` rules.
 - API `404` -> `SUCCESS`;
 - API `200` for another user's article -> `SUCCESS`;
 - API `200` for the user's own article -> `PENDING`.
+
+For `DELETE`, the Zenn publication must also be deleted from the Zenn Dashboard.
+
+Dashboard deletion is not ordered relative to the deploy-side artifact removal:
+
+- it may be performed before conversion/deployment; or
+- it may be performed after a check returns PENDING because the user's publication still exists.
+
+`DELETE` reaches semantic `SUCCESS` when check confirms that the previous own-user publication no longer exists.
 
 #### RECREATE result
 
@@ -680,6 +701,26 @@ If any check fails:
 - result is `NOT_READY`;
 - commit is prohibited;
 - rollback or cleanup remains incomplete.
+
+#### Command result
+
+`check` reports commit readiness through both its command-line output and exit code.
+
+`COMMIT_READY`:
+
+- pending article count is zero;
+- deploy state is consistent;
+- management changes are ready to commit;
+- the output instructs the user to use `[skip ci]`;
+- exit code is `0`.
+
+`NOT_READY`:
+
+- unresolved pending articles remain, or the deploy state is inconsistent;
+- management changes must not be committed;
+- exit code is `1`.
+
+Internal errors and other failures that prevent the readiness result from being determined use exit code `2`.
 
 ### `import`
 
@@ -869,13 +910,17 @@ Unused images are not removed merely because no active article currently referen
 
 Preview uses the authoring image tree directly through a symlink.
 
-Article semantic result and image deployment result are independent.
+Article semantic results and image deployment results are independent.
 
 Article state checker success does not prove image deployment success.
 
+If a deployment contains both article and image changes, each result is handled independently. An image deployment result of `ERROR` does not alter the article semantic result determined by the state checker.
+
+If the article result is `SUCCESS`, its confirmed article state may be committed even when the image deployment failed.
+
 Image-only deployment success is confirmed through the Zenn Dashboard deployment result.
 
-If an image deployment fails, recovery is not fixed to a single algorithm. Depending on the cause, the user may rename the image, update references, remove the image, or otherwise correct authoring inputs and rerun the normal workflow.
+No fixed automatic recovery procedure is defined for image deployment errors. Depending on the failure cause, the user may rename an image, update references, remove an image, or otherwise correct the authoritative authoring inputs and rerun the normal publish workflow.
 
 ## External Zenn interfaces
 
@@ -925,7 +970,7 @@ A supporting utility may generate a proposed slug from an article using a form s
 
 The user copies the resulting slug into the source.
 
-Random suffixes are used to reduce collision probability. If a first-publish candidate still collides, a new candidate slug can be generated.
+Random suffixes are used to reduce collision probability. If a `CREATE` or `RECREATE` candidate collides, a new candidate slug can be generated.
 
 ## Known limitations and backlog
 
