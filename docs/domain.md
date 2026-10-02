@@ -34,7 +34,7 @@ A `{release-number}`:
 - does not skip numbers; and
 - is not a deploy-attempt number.
 
-Redeploying the same revision does not increment `{release-number}`.
+Redeploying the same `{article-artifact}` does not increment `{release-number}`.
 
 If the latest `{article-artifact}` is unchanged, the same `{release-number}` is used.
 
@@ -115,9 +115,9 @@ The source state is the `{article-state}` declared by the authoring source and r
 
 Source state is an intended state. It does not by itself mean that the same state has already been established on Zenn.
 
-### Confirmed state
+### Ledger confirmed state
 
-The confirmed state is the `{article-state}` whose establishment on Zenn has been confirmed by the authoring tool.
+The ledger confirmed state is the `{article-state}` whose establishment on Zenn has been confirmed by the authoring tool.
 
 A confirmed state is either:
 
@@ -126,7 +126,7 @@ A confirmed state is either:
 
 `hold` is not a confirmed state because it is a source-side working state rather than a state established on Zenn.
 
-Source state and confirmed state therefore represent different stages of certainty and may temporarily differ while a publish transition is in progress.
+Source state and ledger confirmed state represent different stages of confirmation and need not be equal.
 
 ## Unresolved publish candidate
 
@@ -177,7 +177,7 @@ The defined operations are `CREATE`, `UPDATE`, `DELETE`, and `RECREATE`.
 
 #### `CREATE`
 
-`CREATE` creates a Zenn publication for a logical article that has not previously been published.
+`CREATE` creates a Zenn publication for an unpublished logical article.
 
 #### `UPDATE`
 
@@ -189,4 +189,4 @@ The defined operations are `CREATE`, `UPDATE`, `DELETE`, and `RECREATE`.
 
 #### `RECREATE`
 
-`RECREATE` creates a Zenn publication again for a logical article whose confirmed state is erased.
+`RECREATE` creates a Zenn publication again for an erased logical article.
