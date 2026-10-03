@@ -47,7 +47,7 @@ Expose only files required for Zenn authoring and deployment to the container.
 
 ### Rationale
 
-The toolchain depends on large Node.js and Python dependency trees. Keeping those dependencies inside the container reduces the amount of third-party code that must be trusted on the host.
+The toolchain depends on large Node.js and Python dependency trees. Keeping those dependencies inside the container limits their direct access to the host filesystem and narrows the set of host files exposed to the toolchain.
 
 The container does not need unrestricted access to unrelated host files.
 
@@ -69,9 +69,10 @@ The user performs those operations on the host after reviewing the tool-produced
 
 ### Rationale
 
-The user should retain direct control over repository history and over the final diff that will be pushed to the Zenn-connected branch.
+Keeping Git history operations on the host preserves an explicit review boundary between tool-produced worktree changes and repository history changes.
 
-Recovery also remains inspectable: the tool can prepare or describe required worktree changes without silently rewriting Git history.
+It also keeps recovery inspectable: the tool can prepare or describe required worktree changes without itself performing history rollback.
+
 
 ### Consequences
 
@@ -276,9 +277,11 @@ Allowing a later deploy-triggering commit while the earlier result is unresolved
 
 ### Consequences
 
-A pending article must reach a terminal result or be explicitly discarded before another candidate deployment can begin.
+Pending article state must be resolved to terminal results, or the unresolved candidate set must be explicitly discarded through `discard-all-pendings`, before another deploy-triggering workflow can begin.
 
 `SUCCESS` and `COLLISION` remove terminal pending entries according to their operation-specific rules; unresolved results retain them.
+
+Image-only changes do not create pending article state, but an unresolved article deployment still prevents starting another deploy-triggering workflow.
 
 See [`architecture.md`](architecture.md#pending_next_state).
 
