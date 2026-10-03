@@ -110,6 +110,7 @@ Publish a managed source article to Zenn for the first time and establish releas
 - No ledger entry exists for the `{article-id}`.
 - No released snapshot exists for the article.
 - No confirmed deploy article exists for the article.
+- The `{article-id}` must be unique among managed source articles.
 
 ### Publish preparation
 
@@ -152,6 +153,7 @@ Examples include:
 - missing release;
 - release other than `1`;
 - `published` not equal to `true`;
+- duplicate `{article-id}`;
 - source article not committed and clean;
 - converter or preflight failure;
 - unexpected deploy diff;
@@ -181,8 +183,9 @@ Edit the source for a currently published article without immediately changing t
 
 - The source article exists with identity `I`.
 - It is currently `active`.
-- It has slug `S` and successful release `N`.
-- Ledger state and released snapshot for release `N` exist.
+- It has slug `S` and source release `N`.
+- The ledger records article identity `I`, slug `S`, and successful release `N`.
+- Released snapshot `N` exists.
 - `deploy/articles/S.md` represents release `N`.
 - Zenn currently exposes the release `N` publication.
 
@@ -485,7 +488,7 @@ Examples include:
 - unintended image deletion in the deploy diff;
 - invalid image reference paths;
 - unsupported image extension;
-- image larger than the supported Zenn limit;
+- image larger than 3 MB;
 - deleting an image still referenced by a published article;
 - Zenn-side image deployment failure.
 
@@ -497,6 +500,7 @@ No fixed automatic recovery is defined for image deployment errors. The user cor
 - deploy `/images` is synchronized to it;
 - article release changes only when the Markdown artifact changes;
 - image-only changes leave article release, ledger, and released snapshots unchanged.
+- Zenn reflects the successfully deployed image additions, replacements, and deletions.
 
 ## US-09 Confirm deployment results
 
@@ -555,6 +559,8 @@ Inspect the relevant Zenn Dashboard deployment entry:
 - deployment still queued or running -> `PENDING`;
 - deployment failure -> image deployment `ERROR`.
 
+After replacing image content at the same path, the visible image may take some time to reflect the new content even after deployment succeeds.
+
 ### Acceptance Criteria
 
 - The checker is one-shot and does not long-poll.
@@ -610,6 +616,7 @@ The already-established remote article change is adopted as a new successful rel
 
 ### Initial state
 
+- source state must be `active`;
 - the target article has confirmed state `active`;
 - successful release is `N`;
 - the user's Zenn publication differs from released snapshot `N`;
@@ -625,6 +632,7 @@ The already-established remote article change is adopted as a new successful rel
 3. Set source release to `N+1`.
 4. Commit the source and make it clean.
 5. Run `state checker import --adopt-remote`.
+   - Before running `import --adopt-remote`: the deploy worktree must be clean.
 6. Run `state checker check`.
 7. If the result is `COMMIT_READY`, review the deploy management changes.
 8. Commit and push those management changes with `[skip ci]`.
@@ -641,7 +649,7 @@ The already-established remote article change is adopted as a new successful rel
 - Confirmed ledger, released snapshot, and deploy artifact are consistent after adoption.
 - The management commit does not trigger another deployment.
 
-### Failure Cases
+### Failure and Guard Cases
 
 Adoption must not proceed when, for example:
 
@@ -651,6 +659,7 @@ Adoption must not proceed when, for example:
 - source release is not `N+1`;
 - the user has not sufficiently reconciled the remote content;
 - an unexpected remote change is discovered.
+- the reconciled source artifact still equals released snapshot `N`; use the default import workflow when only remote metadata needs reconciliation.
 
 Unexpected remote content must be reconciled manually rather than automatically adopted.
 
