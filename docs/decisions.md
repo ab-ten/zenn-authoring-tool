@@ -21,13 +21,25 @@ Use one Git repository with:
 - `main` or `master` as the authoring branch; and
 - `deploy` as the Zenn-connected deployment and management branch.
 
-Access them through separate Git worktrees.
+The deploy branch is checked out as a linked worktree at `/_deploy` directly under the authoring worktree.
+
+The authoring branch ignores `/_deploy/`.
+
+Use relative worktree links with:
+
+`worktree.useRelativePaths = true`
+
+so that the same repository/worktree relationship can be used from both the host and container even when their absolute filesystem paths differ.
+
+The host and container require Git 2.48 or later.
 
 ### Rationale
 
 Authoring commits should not automatically become Zenn deployment inputs. Drafts and in-progress work need to be commit-able without causing unnecessary deployment.
 
 Using worktrees also allows the authoring branch and deploy branch to be accessed at the same time without repeatedly switching the checked-out branch.
+
+Keeping the deploy worktree at a stable relative location also allows the host and container to observe the same repository layout without embedding host-specific absolute worktree paths into Git metadata.
 
 ### Consequences
 
@@ -53,7 +65,13 @@ The container does not need unrestricted access to unrelated host files.
 
 ### Consequences
 
-The container is responsible for conversion, validation, preview, remote checks, and permitted deploy-worktree file updates.
+The authoring worktree is exposed read-only to the container.
+
+The deploy worktree at `/_deploy` is exposed read-write because converter and state-checker operations must update generated and management files there.
+
+Git metadata for both worktrees is exposed read-only.
+
+The container may inspect Git state but does not modify Git metadata.
 
 Operations that require broader host control remain outside the container.
 
@@ -66,6 +84,8 @@ See [`architecture.md`](architecture.md#execution-environment-and-responsibility
 Do not let the converter or state checker perform Git history operations such as commit, push, or history rollback.
 
 The user performs those operations on the host after reviewing the tool-produced worktree changes or recovery instructions.
+
+Git commands executed inside the container are limited to read-only inspection. Git status inspection uses `--no-optional-locks`, and operations that modify refs, indexes, worktree metadata, or repository history remain host-side responsibilities.
 
 ### Rationale
 

@@ -12,20 +12,55 @@ User-facing goals and observable workflows are documented separately in `use-cas
 
 The converter, state checker, preview environment, and their dependencies run inside Docker.
 
-The container trust boundary is intentionally limited so that large dependency trees such as Node.js or Python modules are kept outside the host trust boundary. The container is given access only to files required for Zenn authoring and deployment.
+The container boundary limits direct access from large dependency trees such as Node.js or Python modules to the host filesystem. Only files and Git metadata required for Zenn authoring and deployment are exposed to the container.
 
-Git history operations are host-side responsibilities. The tools may modify the deploy worktree where specified, but the user performs and reviews operations such as:
+The authoring worktree is mounted read-only.
+
+The deploy worktree at `/_deploy` is mounted read-write so that the converter and state checker can apply generated article, image, and management changes.
+
+Git metadata is exposed read-only:
+
+- the authoring worktree `.git` is read-only;
+- `/_deploy/.git` is read-only; and
+- tools inside the container do not modify Git metadata.
+
+Git inspection performed inside the container uses read-only Git operations.
+
+In particular, Git status inspection uses:
+
+`git --no-optional-locks status ...`
+
+so that optional index refresh or other optional locking behavior is disabled.
+
+Git history and metadata modifications are host-side responsibilities. The tools may modify ordinary files in the deploy worktree where specified, but the user performs and reviews operations such as:
 
 - `git diff`;
 - commit;
-- push; and
-- Git restore or other recovery operations explicitly instructed by the tools.
+- push;
+- Git restore or other recovery operations explicitly instructed by the tools; and
+- worktree creation, repair, or other Git metadata changes.
 
-The converter and state checker do not commit or push Git history themselves.
+The converter and state checker do not commit, push, restore Git history, or modify worktree metadata themselves.
 
 ## Repository and worktree layout
 
 A single Git repository is used with separate worktrees for authoring and deployment.
+
+The deploy worktree is located directly under the authoring worktree as:
+
+`/_deploy`
+
+`/_deploy` is a linked worktree for the `deploy` branch.
+
+The authoring branch ignores `/_deploy/`.
+
+The repository uses relative worktree links:
+
+`worktree.useRelativePaths = true`
+
+This allows the repository and linked deploy worktree to retain the same relative layout when the host and container use different absolute filesystem paths.
+
+Both the host and container require Git 2.48 or later.
 
 ### Authoring branch
 
@@ -38,6 +73,14 @@ The authoring worktree is allowed to contain unrelated or in-progress dirty file
 ### Deploy branch
 
 The `deploy` branch is the deployment and management branch connected to Zenn.
+
+It is checked out as the linked worktree:
+
+`/_deploy`
+
+inside the authoring worktree.
+
+Using a relative worktree link allows both the host and container to access the same authoring/deploy relationship even when their absolute paths differ.
 
 It is accessed through a separate worktree so that the authoring branch does not need to be switched when preparing a deployment.
 
@@ -263,6 +306,16 @@ Unexpected partial results or abnormal termination are detected and recovered th
 
 - the deploy worktree's dirty state; and
 - user review of `git diff`.
+
+### Git state inspection
+
+The converter inspects Git state from inside the container using the read-only Git metadata exposed by the container configuration.
+
+Git inspection must not modify the index, worktree metadata, refs, or repository history.
+
+Commands that may perform optional locking use `--no-optional-locks` where applicable.
+
+Git commands that modify repository or worktree metadata are not part of converter or state-checker behavior and remain host-side operations.
 
 ### Authoring worktree checks
 
