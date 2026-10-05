@@ -502,6 +502,17 @@ No fixed automatic recovery is defined for image deployment errors. The user cor
 - image-only changes leave article release, ledger, and released snapshots unchanged.
 - Zenn reflects the successfully deployed image additions, replacements, and deletions.
 
+### Known limitation / validation task
+
+If an image deployment fails transiently after authoring `/images` has already been mirrored to deploy `/images`, no local image difference may remain to trigger the same image update again.
+
+The retry behavior is not yet defined.
+
+Phase 0 must verify whether pushing an empty commit to the deploy branch causes Zenn to reprocess unchanged image content.
+
+- If it does, an empty host-side commit may be used as the manual retry mechanism.
+- If it does not, recovery uses a normal workflow change such as changing the image path, and a force-image-sync mechanism may be considered later if needed.
+
 ## US-09 Confirm deployment results
 
 ### Purpose

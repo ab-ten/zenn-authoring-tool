@@ -285,7 +285,9 @@ See [`architecture.md`](architecture.md#state-checker).
 
 Represent unresolved article deployment candidates in `pending_next_state`.
 
-While any pending article exists, do not allow generation of another publish candidate.
+While any pending article exists, do not allow another deployable publish candidate to be applied or persisted.
+
+Temporary candidate artifacts and publish-plan entries may still be constructed as in-memory planning data. Preflight enforces the pending guard before any such plan is applied to the deploy worktree.
 
 Image-only changes do not create pending article state.
 

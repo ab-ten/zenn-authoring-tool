@@ -474,6 +474,12 @@ If preflight does not return `OK`, the converter does not apply the plan.
 
 For `UPDATE`, successful preflight returns a `{baseline-observation}` that is retained for the pending candidate.
 
+Temporary candidate artifacts and publish-plan entries may be constructed while unresolved pending state exists.
+
+These are in-memory planning data only and do not become a deployable candidate unless preflight succeeds.
+
+`preflight` enforces the pending guard before any publish plan is applied to the deploy worktree.
+
 ### Publish-plan application
 
 The converter applies only the same plan that passed preflight.
@@ -969,11 +975,15 @@ Article state checker success does not prove image deployment success.
 
 If a deployment contains both article and image changes, each result is handled independently. An image deployment result of `ERROR` does not alter the article semantic result determined by the state checker.
 
-If the article result is `SUCCESS`, its confirmed article state may be committed even when the image deployment failed.
+If the article result is `SUCCESS`, its confirmed article state may be updated locally even when the image deployment failed.
+
+Whether those local management changes may be committed still depends on the overall `COMMIT_READY` result.
 
 Image-only deployment success is confirmed through the Zenn Dashboard deployment result.
 
 No fixed automatic recovery procedure is defined for image deployment errors. Depending on the failure cause, the user may rename an image, update references, remove an image, or otherwise correct the authoritative authoring inputs and rerun the normal publish workflow.
+
+Retry behavior after a transient Zenn-side image deployment failure with no remaining authoring/deploy image diff is intentionally undefined pending Phase 0 validation.
 
 ## External Zenn interfaces
 
