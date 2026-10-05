@@ -737,7 +737,7 @@ If `pending_next_state` is non-empty:
 - management changes for already terminal articles remain in the worktree;
 - only unresolved articles are observed by the next `check`.
 
-If `pending_next_state` is empty, the checker validates confirmed state against deploy `/articles`.
+If `pending_next_state` is empty, the checker validates ledger confirmed state against deploy `/articles`.
 
 For each confirmed `active` article:
 
@@ -975,7 +975,7 @@ Article state checker success does not prove image deployment success.
 
 If a deployment contains both article and image changes, each result is handled independently. An image deployment result of `ERROR` does not alter the article semantic result determined by the state checker.
 
-If the article result is `SUCCESS`, its confirmed article state may be updated locally even when the image deployment failed.
+If the article result is `SUCCESS`, its confirmed management state may be updated locally even when the image deployment failed.
 
 Whether those local management changes may be committed still depends on the overall `COMMIT_READY` result.
 

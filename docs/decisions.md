@@ -132,7 +132,7 @@ See [`architecture.md`](architecture.md#execution-model).
 
 ### Decision
 
-Determine each article's `{operation}` once from source state, confirmed state, and artifact comparison during converter planning.
+Determine each article's `{operation}` once from source state, ledger confirmed state, and artifact comparison during converter planning.
 
 Later validation, preflight, and apply phases must not reclassify that operation.
 

@@ -555,7 +555,7 @@ For each pending article, `check` determines one of the following semantic resul
 
 - `SUCCESS`: expected article state is confirmed and confirmed management state is advanced;
 - `PENDING`: previous successful state remains and the candidate stays unresolved;
-- `COLLISION`: the failed CREATE/RECREATE candidate is cleaned up without advancing confirmed state;
+- `COLLISION`: the failed CREATE/RECREATE candidate is cleaned up without advancing confirmed management state;
 - `UNKNOWN` or `ERROR`: previous successful state remains and the candidate remains unresolved.
 
 If any article remains `PENDING`, wait as appropriate and run `check` again. Do not trigger another deployment in the meantime.
@@ -593,7 +593,7 @@ After replacing image content at the same path, the visible image may take some 
 ### Failure and Recovery Cases
 
 - `PENDING`: preserve previous successful state and rerun the one-shot check later.
-- `COLLISION`: preserve confirmed state, commit the cleanup when ready, then return to slug resolution.
+- `COLLISION`: preserve confirmed management state, commit the cleanup when ready, then return to slug resolution.
 - `UNKNOWN` / `ERROR`: preserve pending and successful state, inspect the cause, and use check, reconcile, or `discard-all-pendings` as appropriate.
 - Image `ERROR`: diagnose using the Zenn Dashboard and correct the authoring inputs; article semantic state remains independent.
 
@@ -647,7 +647,7 @@ The already-established remote article change is adopted as a new successful rel
 ### Initial state
 
 - source state must be `active`;
-- the target article has confirmed state `active`;
+- the target article has ledger confirmed state `active`;
 - successful release is `N`;
 - the user's Zenn publication differs from released snapshot `N`;
 - no `pending_next_state` exists;
