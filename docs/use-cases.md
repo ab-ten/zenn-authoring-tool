@@ -540,14 +540,18 @@ For mixed article-and-image deployment:
 
 Run state checker `check` as a one-shot operation.
 
-Possible results are:
+For each pending article, `check` determines one of the following semantic results:
 
 - `SUCCESS`: expected article state is confirmed and confirmed management state is advanced;
 - `PENDING`: previous successful state remains and the candidate stays unresolved;
 - `COLLISION`: the failed CREATE/RECREATE candidate is cleaned up without advancing confirmed state;
 - `UNKNOWN` or `ERROR`: previous successful state remains and the candidate remains unresolved.
 
-If `check` returns `PENDING`, wait as appropriate and run `check` again. Do not trigger another deployment in the meantime.
+If any article remains `PENDING`, wait as appropriate and run `check` again. Do not trigger another deployment in the meantime.
+
+After per-article results have been applied locally, `check` determines global commit readiness as either `COMMIT_READY` or `NOT_READY`.
+
+A per-article `SUCCESS` does not by itself permit a management commit. Management or cleanup changes may be committed only when the overall check result is `COMMIT_READY`.
 
 If the check reaches `COMMIT_READY`, review the management or cleanup diff and commit/push it with `[skip ci]`.
 
@@ -570,8 +574,10 @@ After replacing image content at the same path, the visible image may take some 
 - Article API success is not treated as proof of image deployment success.
 - Image-only deployment does not change article release, ledger state, or released snapshots.
 - While an unresolved article deployment exists, a new deploy-triggering commit is not pushed.
-- Management commits after article result handling use `[skip ci]`.
+- Management commits after `COMMIT_READY` use `[skip ci]`.
 - Converter and checker do not modify the authoring source.
+- A per-article `SUCCESS` may update local confirmed management state while the overall check remains `NOT_READY` because another article is unresolved.
+- Management and cleanup changes are committed only when the overall check result is `COMMIT_READY`.
 
 ### Failure and Recovery Cases
 
@@ -584,27 +590,40 @@ After replacing image content at the same path, the visible image may take some 
 
 **Article SUCCESS**
 
-- expected remote article state has been confirmed;
-- confirmed management state has been updated according to the operation;
-- management changes are committed and pushed with `[skip ci]`.
+- the expected remote state for that article has been confirmed;
+- confirmed management state for that article has been updated locally;
+- the corresponding pending entry has been removed;
+- whether those local management changes may be committed is determined by the overall commit-readiness result.
 
 **Image-only SUCCESS**
 
 - Zenn deployment success has been confirmed;
 - article release, ledger, and released snapshots are unchanged.
 
-**PENDING / UNKNOWN / ERROR**
+**Article PENDING / UNKNOWN / ERROR**
 
-- previous successful ledger and snapshot remain;
-- unresolved pending state remains;
-- no new deployment is started until the issue is resolved.
+- the previous successful ledger state and released snapshot for each unresolved article remain unchanged;
+- the corresponding pending entry remains;
+- no new deployment is started while unresolved article state remains.
 
-**COLLISION**
+**Article COLLISION**
 
-- confirmed ledger and released snapshot remain unchanged;
-- failed candidate cleanup is complete;
+- confirmed ledger state and the released snapshot for that article remain unchanged;
+- the failed candidate cleanup is complete;
 - the corresponding pending entry has been removed;
-- after cleanup management commit, slug resolution can proceed.
+- whether cleanup may be committed is determined by the overall commit-readiness result.
+
+**COMMIT_READY**
+
+- no unresolved article pending state remains;
+- deploy state is consistent with confirmed management state;
+- management and cleanup changes may be reviewed, committed, and pushed with `[skip ci]`.
+
+**NOT_READY**
+
+- unresolved pending state remains or deploy state is inconsistent;
+- management and cleanup changes must not be committed;
+- local changes for already-terminal articles remain in the deploy worktree until a later check reaches `COMMIT_READY`.
 
 ## US-10 Adopt an emergency Zenn-side edit
 
