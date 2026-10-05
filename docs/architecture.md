@@ -927,10 +927,10 @@ The normal article publish workflow is:
 
 Per article:
 
-- `SUCCESS` advances confirmed state and removes the pending entry;
-- `PENDING` keeps confirmed state unchanged and retains pending;
+- `SUCCESS` advances ledger confirmed state and removes the pending entry;
+- `PENDING` keeps ledger confirmed state unchanged and retains pending;
 - `COLLISION` cleans up the failed candidate and removes its pending entry;
-- `UNKNOWN` or `ERROR` keeps confirmed state unchanged and retains pending.
+- `UNKNOWN` or `ERROR` keeps ledger confirmed state unchanged and retains pending.
 
 After `check`:
 
