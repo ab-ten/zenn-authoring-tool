@@ -152,6 +152,10 @@ Exactly one latest successful `{article-artifact}` is retained for each `{articl
 
 Its logical structure is defined below.
 
+## `ledger.json` and released snapshot file update method
+
+Management JSON and released snapshots MUST NOT be updated in place. The complete replacement content is written to a temporary file in the same directory and atomically replaces the destination.
+
 ## Authoring source representation
 
 The Zenn Front Matter remains at the beginning of the authoring Markdown file.
