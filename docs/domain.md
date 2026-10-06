@@ -139,7 +139,14 @@ Such a candidate represents an article transition whose resulting successful sta
 
 The ledger representation named `pending_next_state` stores only article transitions whose result is still unresolved. It represents the authoring tool's unresolved publish candidates and is not itself the Zenn-side deploy status.
 
-The concrete fields of `pending_next_state`, the rules that guard operations while it exists, and the procedures that resolve or discard candidates are outside the scope of this document.
+A pending candidate remains unresolved until one of the following occurs:
+
+- `SUCCESS`: the candidate is confirmed successful, its successful state is applied, and the pending entry is removed;
+- `confirm-pending-update`: for an eligible UPDATE pending, user confirmation is used to establish the same successful result as normal UPDATE success, after which the pending entry is removed;
+- `COLLISION`: the candidate is rejected because of a collision, candidate-specific generated state is cleaned up, and the pending entry is removed; or
+- `discard-all-pendings`: the user explicitly abandons all unresolved candidates.
+
+The detailed eligibility rules, remote classification rules, cleanup procedures, local apply procedure, and command workflows are defined outside this document.
 
 ## Remote observation
 
@@ -166,6 +173,51 @@ Once the publish candidate has been generated, the `{baseline-observation}` is n
 `{baseline-observation}` does not represent a successful state. It represents the remote comparison point that existed before deployment.
 
 Only an UPDATE candidate has a `{baseline-observation}`.
+
+### `{observation-override}`
+
+`{observation-override}` is a one-shot authorization by the user to accept a specific remote drift when publishing an UPDATE candidate.
+
+Its value is one `{zenn-observation}` representing the remote state that the user has explicitly reviewed and accepted.
+
+`{observation-override}` is used only for UPDATE preflight when the current remote observation differs from the ledger's successful Zenn observation.
+
+It is not a successful state and does not by itself change:
+
+- the ledger confirmed state;
+- the released snapshot;
+- the successful release; or
+- the successful Zenn observation.
+
+An `{observation-override}` is valid only for an UPDATE candidate in which the source declares the next release.
+
+For the override to authorize the UPDATE, the current `{zenn-observation}` must exactly equal the `{observation-override}`. If they differ, the override no longer authorizes the current remote state.
+
+When UPDATE preflight succeeds using an `{observation-override}`, that current `{zenn-observation}` becomes the candidate's `{baseline-observation}`.
+
+An `{observation-override}` is one-shot authorization rather than history. It is removed after the corresponding successful release is confirmed and is not carried forward to later releases.
+
+In an authoring source, an optional `{observation-override}` is represented by the management comment:
+
+`<!-- #observation-override:{JSON} -->`
+
+The JSON value is the concrete representation of one `{zenn-observation}`.
+
+The comment is authoring-tool management information and is therefore removed when generating `{article-artifact}`.
+
+A source contains either zero or one observation-override management comment. After the corresponding successful release is confirmed, the comment is removed from the source.
+
+### Successful Zenn observation
+
+The ledger's successful Zenn observation is the `{zenn-observation}` of the user's own publication from the most recently confirmed successful publication result.
+
+It records successful remote state rather than merely observed remote state.
+
+For successful `CREATE`, `UPDATE`, and `RECREATE`, it is updated to the current `{zenn-observation}` associated with that success.
+
+A successful `DELETE` does not replace it, because no current publication observation exists after deletion.
+
+Observations of publications owned by other users are not stored as the successful Zenn observation.
 
 ## Publish operation
 
