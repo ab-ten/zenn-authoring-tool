@@ -168,6 +168,7 @@ The supported management comments are:
 - `<!-- #slug:{slug} -->`
 - `<!-- #state:{article-state} -->`
 - `<!-- #release:{release-number} -->`
+- `<!-- #observation-override:{JSON} -->`
 
 `{article-id}` uses a UUID as its concrete string representation.
 
@@ -179,11 +180,27 @@ The source `#state` declares the next intended `{article-state}`.
 
 For an operation that publishes an `{article-artifact}`, source `#release` is treated as the candidate `{release-number}`.
 
+`#observation-override` is optional and may appear zero or one time. Its JSON value is the concrete representation of one `{zenn-observation}`. Multiple observation-override comments are invalid.
+
 The converter parses consecutive management comments immediately following the Front Matter.
 
 When an article artifact is generated, all authoring-tool management comments are removed. The Zenn Front Matter and article body are otherwise preserved according to the normal rendering rules.
 
 Management comment representation does not itself perform validation or transition classification. Those responsibilities belong to the converter and state checker.
+
+### Observation override validation
+
+The converter parses the optional `#observation-override` management comment as an `{observation-override}`.
+
+If no override is present, no additional validation is required.
+
+If an override is present:
+
+- its JSON value must be a valid concrete `{zenn-observation}` representation;
+- the already-classified `{operation}` must be `UPDATE`;
+- otherwise conversion fails.
+
+Observation-override validation does not classify or reclassify the article operation.
 
 ## Ledger representation
 
@@ -215,7 +232,9 @@ Observations of other users' publications are not stored as the article's succes
 
 `pending_next_state` records publish candidates whose remote result has not yet been confirmed.
 
-The existence of any pending article blocks generation of a new publish candidate.
+The existence of any pending article prevents a new deployable publish candidate from being authorized or applied.
+
+Temporary in-memory candidate artifacts and publish-plan entries may still be constructed. Preflight enforces the pending guard before any publish plan is applied to the deploy worktree.
 
 Each pending entry is keyed by `{article-id}` and stores:
 
@@ -239,6 +258,7 @@ An `UPDATE` pending entry stores the `{baseline-observation}` returned by succes
 Pending entries are resolved only by:
 
 - successful result confirmation;
+- `confirm-pending-update` for an eligible pending `UPDATE`;
 - collision cleanup; or
 - `discard-all-pendings`.
 
@@ -470,6 +490,12 @@ The final publish plan is immutable for the remainder of the conversion.
 
 Exactly the same publish plan is passed to state-checker preflight and, if preflight succeeds, to deploy application.
 
+For an `UPDATE` entry, if the source contains an `{observation-override}`, the same value is retained in the per-article publish-plan entry.
+
+The `{observation-override}` is planning/preflight input only. It is not written to `pending_next_state`.
+
+After successful UPDATE preflight, only the returned `{baseline-observation}` is stored in the pending entry.
+
 ### Preflight invocation
 
 The converter invokes state-checker `preflight` with the finalized publish plan.
@@ -574,17 +600,27 @@ Preflight obtains the current `{zenn-observation}`.
 
 Any result other than API `200` for the user's own publication is an error.
 
-For the own-user publication, the current observation is compared with the ledger successful Zenn observation.
+If the publish-plan entry contains an `{observation-override}`:
 
-If they differ:
+- current observation != override:
+  - return `ERROR`;
+  - report that the remote publication may have changed again after the override was created;
+  - report both the override and current observation.
+- current observation == override:
+  - compare the current observation with the ledger successful Zenn observation;
+  - if they are equal, return `ERROR` because no remote drift exists and the override is unnecessary or stale;
+  - if they differ, return `OK` and use the current observation as `{baseline-observation}`.
 
-- preflight returns `ERROR`;
-- the condition is reported as remote drift.
+If the publish-plan entry does not contain an `{observation-override}`:
 
-If they match:
-
-- preflight returns `OK`;
-- the current observation is returned as `{baseline-observation}`.
+- current observation == ledger successful Zenn observation:
+  - return `OK`;
+  - use the current observation as `{baseline-observation}`.
+- otherwise:
+  - return `ERROR` as remote drift;
+  - report the ledger successful Zenn observation;
+  - report the current observation;
+  - report the current observation's JSON representation suitable for `#observation-override`.
 
 #### DELETE preflight
 
@@ -669,40 +705,48 @@ Dashboard deletion is not ordered relative to the deploy-side artifact removal:
 
 RECREATE result checking follows the new-article result model for the candidate slug.
 
+### Terminal-result local apply
+
+Terminal-result local apply applies a confirmed `SUCCESS` or `COLLISION` to the local deploy worktree, article by article, in the order specified below.
+
+Terminal-result local application is idempotent.
+
+No additional persistent intermediate state such as `applying` or `recovery` is introduced.
+
+Removal of `pending_next_state[{article-id}]` is the article-level commit point. It occurs in the same ledger atomic replacement as the corresponding confirmed-state changes, after any required snapshot replacement or candidate cleanup has completed.
+
+If processing is interrupted while the pending entry still exists, a later `check` re-evaluates the same remote result and retries the same terminal-result local apply.
+
+A local write that already equals its target content is treated as a no-op.
+
+Local content that is neither the expected pre-apply state nor the target state is an error.
+
+Once the pending entry has been removed, that article is no longer a terminal-apply target on later checks.
+
 ### Applying `SUCCESS`
 
-For `CREATE` success:
+For `CREATE`, `UPDATE`, and `RECREATE` success, apply the following steps in order:
 
-- create or finalize `articles[{article-id}]`;
-- state = `active`;
-- slug = candidate `{slug}`;
-- successful release = candidate `{release-number}`;
-- released snapshot = candidate `{article-artifact}`;
-- successful Zenn observation = current observation of the user's own publication.
+1. Obtain the candidate `{article-artifact}` from `deploy/articles/<candidate-slug>.md`.
+2. Atomically replace the released snapshot with the candidate `{article-artifact}`. If the snapshot already equals the candidate artifact, treat this step as a no-op and continue.
+3. Atomically replace the ledger, applying all of the following changes together:
+   - create or finalize `articles[{article-id}]` for `CREATE`;
+   - confirmed state = `active`;
+   - slug = candidate `{slug}` for `CREATE` and `RECREATE`; retain the confirmed slug for `UPDATE`;
+   - successful release = candidate `{release-number}`;
+   - successful Zenn observation = current observation of the user's own publication;
+   - remove `pending_next_state[{article-id}]` (the article-level commit point).
 
-For `UPDATE` success:
+The pending entry remains until snapshot replacement has completed and the ledger atomic replacement commits the article result.
 
-- successful release = candidate `{release-number}`;
-- released snapshot = candidate `{article-artifact}`;
-- successful Zenn observation = current observation of the user's own publication.
+For `DELETE` success, do not modify the released snapshot. Atomically replace the ledger, applying all of the following changes together:
 
-For `DELETE` success:
-
-- state = `erased`;
+- confirmed state = `erased`;
 - retain the existing slug;
 - retain successful release;
 - retain released snapshot;
-- retain successful Zenn observation.
-
-For `RECREATE` success:
-
-- state = `active`;
-- slug = candidate `{slug}`;
-- successful release = candidate `{release-number}`;
-- released snapshot = candidate `{article-artifact}`;
-- successful Zenn observation = current observation of the user's own publication.
-
-After successful application, the corresponding `pending_next_state[{article-id}]` entry is removed.
+- retain successful Zenn observation;
+- remove `pending_next_state[{article-id}]` (the article-level commit point).
 
 ### Applying `COLLISION`
 
@@ -710,14 +754,14 @@ After successful application, the corresponding `pending_next_state[{article-id}
 
 The confirmed successful article state is not changed.
 
-The checker:
+The checker applies the following steps in order:
 
-- reads the candidate slug from `pending_next_state`;
-- removes `deploy/articles/<candidate-slug>.md`;
-- removes the article's pending entry;
-- leaves the source unchanged;
-- leaves cleanup changes dirty in the deploy worktree;
-- instructs the user to review, commit, and push the cleanup using `[skip ci]`.
+1. Read the candidate slug from `pending_next_state` and remove `deploy/articles/<candidate-slug>.md`. If the candidate deploy artifact is already absent, treat cleanup as a no-op and continue. Unexpected artifact content is an error under the terminal-result local apply rules.
+2. Atomically replace the ledger, leaving confirmed successful article state unchanged and removing `pending_next_state[{article-id}]` together (the article-level commit point).
+
+The pending entry remains until candidate deploy artifact cleanup has completed and the ledger atomic replacement commits the collision result.
+
+The checker leaves the source unchanged, leaves cleanup changes dirty in the deploy worktree, and instructs the user to review, commit, and push the cleanup using `[skip ci]`.
 
 The user then changes source `#slug` to another candidate and starts a later publish workflow.
 
@@ -785,73 +829,37 @@ If any check fails:
 
 Internal errors and other failures that prevent the readiness result from being determined use exit code `2`.
 
-### `import`
+### `confirm-pending-update <article-id>`
 
-`import` reconciles remote state that exists outside the normal pending publish flow.
+`confirm-pending-update` is a maintenance command for an UPDATE whose deployment cannot be confirmed automatically because its normal check result remains `PENDING`.
 
-The target article is selected by `{article-id}` or source filename.
+It is available only when:
 
-Common guards require:
+- `pending_next_state[{article-id}]` exists; and
+- the pending operation is `UPDATE`.
 
-- ledger confirmed state is `active`;
-- no `pending_next_state` exists;
-- the deploy worktree is clean;
-- current remote state can be obtained;
-- the current remote publication belongs to the user;
-- current remote `{slug}` equals the confirmed ledger `{slug}`.
+The command re-observes the article using the same observation and UPDATE result-classification logic as normal `check`.
 
-#### Default import
+If the result is:
 
-Default `import` is for reconciling remote metadata drift when the user has confirmed that remote article content still matches the released snapshot.
+- `PENDING`: manual confirmation may proceed;
+- `SUCCESS`: manual confirmation is unnecessary; the command returns an error and instructs the user to use normal `check`;
+- `UNKNOWN` or `ERROR`: manual confirmation is prohibited.
 
-It obtains the current `{zenn-observation}` and updates only the ledger successful Zenn observation.
+Manual confirmation uses the user as a trust boundary. Before confirming, the user must have verified:
 
-It does not change:
+- in the Zenn Dashboard, that the target deployment completed successfully; and
+- that the current remote content equals the candidate `{article-artifact}`.
 
-- state;
-- slug;
-- successful release; or
-- released snapshot.
+The state checker does not independently verify remote content equality.
 
-If remote content differs from the released snapshot, or equality cannot be confirmed, import is not performed and returns an error.
+After confirmation, the pending UPDATE is treated as `SUCCESS`.
 
-#### `import --adopt-remote`
+The command uses exactly the same terminal-result local apply as normal UPDATE success.
 
-`--adopt-remote` explicitly adopts an article change that was made outside the authoring tool as a new successful release.
+Ledger state update and removal of the pending entry occur in the same atomic `ledger.json` replacement.
 
-It requires explicit user action.
-
-Preconditions include:
-
-- no pending state;
-- clean deploy worktree;
-- target source committed and clean;
-- ledger confirmed state `active`;
-- ledger successful release = `N`;
-- source state `active`;
-- source slug equals confirmed ledger slug;
-- source `#release` = `N+1`;
-- source article artifact differs from released snapshot `N`;
-- current remote is the user's own publication;
-- the user has reconciled the source with current remote content.
-
-The normal artifact renderer is used to generate the adopted article artifact from source Markdown.
-
-`--adopt-remote` does not:
-
-- run image mirror synchronization;
-- run preflight; or
-- create `pending_next_state`.
-
-On successful adoption:
-
-- `deploy/articles/<confirmed-slug>.md` becomes the generated article artifact;
-- released snapshot becomes the generated article artifact;
-- successful release becomes `N+1`;
-- successful Zenn observation becomes the current observation;
-- state, slug, and `{article-id}` are unchanged.
-
-After adoption, `check` is used for commit-readiness validation. A `COMMIT_READY` result allows the management changes to be committed and pushed with `[skip ci]`.
+If interrupted while the pending entry still exists, the command may be safely retried according to the common terminal-result recovery rules.
 
 ### `discard-all-pendings`
 
@@ -938,8 +946,13 @@ Per article:
 
 After `check`:
 
-- `COMMIT_READY` -> review management/cleanup diff, then `[skip ci]` commit and push;
-- `NOT_READY` -> do not commit; rerun `check` or use an appropriate recovery path such as `discard-all-pendings`.
+`COMMIT_READY` -> review management/cleanup diff, then `[skip ci]` commit and push;
+
+`NOT_READY` -> do not commit. Resolve unresolved pending state by:
+
+- rerunning `check` when further remote propagation may complete;
+- for an eligible UPDATE that remains `PENDING`, using `confirm-pending-update <article-id>` and then rerunning `check`; or
+- when appropriate, using `discard-all-pendings`.
 
 ## Image workflow
 
