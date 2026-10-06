@@ -295,17 +295,119 @@ Image-only changes do not create pending article state.
 
 Remote observations must be attributable to one known article candidate and, for UPDATE, to one known `{baseline-observation}`.
 
-Allowing a later deploy-triggering commit while the earlier result is unresolved would make it unsafe to determine which deployment caused a remote change.
+Allowing a later deploy-triggering commit while an earlier article result is unresolved would make it unsafe to determine which deployment caused a remote change.
+
+The pending guard therefore serializes deployable article candidates without requiring the converter itself to become a concurrent transaction manager.
 
 ### Consequences
 
-Pending article state must be resolved to terminal results, or the unresolved candidate set must be explicitly discarded through `discard-all-pendings`, before another deploy-triggering workflow can begin.
+Pending article state must be resolved before another deploy-triggering workflow can begin.
 
-`SUCCESS` and `COLLISION` remove terminal pending entries according to their operation-specific rules; unresolved results retain them.
+The supported resolution paths are:
+
+- normal `SUCCESS`, which advances successful state and removes the pending entry;
+- `confirm-pending-update` for an eligible pending `UPDATE`, which confirms the same UPDATE SUCCESS result using explicit user verification;
+- `COLLISION`, which cleans up the failed candidate without advancing successful state and removes the pending entry; or
+- `discard-all-pendings`, which explicitly abandons the unresolved candidate set after the required safety checks.
+
+`PENDING`, `UNKNOWN`, and `ERROR` from normal `check` retain the pending entry.
 
 Image-only changes do not create pending article state, but an unresolved article deployment still prevents starting another deploy-triggering workflow.
 
 See [`architecture.md`](architecture.md#pending_next_state).
+
+## Recover interrupted terminal-result application by idempotent retry
+
+### Decision
+
+Make terminal-result local application idempotent and recover interruption by rerunning the same terminal-result processing.
+
+Do not introduce additional persistent intermediate states such as `applying` or `recovery`.
+
+Treat removal of `pending_next_state[{article-id}]` as the article-level commit point.
+
+Update `ledger.json` and released snapshots by atomic replacement rather than in-place modification.
+
+For `CREATE`, `UPDATE`, and `RECREATE` SUCCESS:
+
+1. atomically replace the released snapshot with the candidate artifact;
+2. treat an already-matching snapshot as a no-op;
+3. atomically replace `ledger.json` with the successful state changes and pending removal together.
+
+For `DELETE` SUCCESS, leave the released snapshot unchanged and atomically apply the ledger state change and pending removal together.
+
+For `COLLISION`, perform candidate cleanup first and then atomically remove the pending entry while leaving confirmed successful state unchanged.
+
+### Rationale
+
+The existing pending entry already provides a durable indication that terminal processing has not committed for that article.
+
+As long as the pending entry remains, `check` can observe the remote result again and retry the same local apply.
+
+Making each preceding local write idempotent allows interruption after a partial local update to be repaired without introducing another persistent transaction phase.
+
+Adding separate `applying` or `recovery` states would expand the persistent state machine and create additional intermediate states that would themselves require recovery rules.
+
+Atomic replacement prevents interruption during a management-file or snapshot write from leaving a partially written file.
+
+### Consequences
+
+A local target that already contains the intended result is treated as a no-op during retry.
+
+Local content that matches neither the expected pre-apply state nor the target state is treated as an error rather than being overwritten blindly.
+
+If processing stops after a released snapshot has been updated but before the ledger replacement commits, the pending entry remains and a later `check` retries the terminal apply.
+
+Once the ledger replacement removes `pending_next_state[{article-id}]`, that article is no longer a terminal-apply target on later checks.
+
+Recovery therefore depends on idempotent operations, atomic file replacement, and the existing pending commit point rather than on additional persistent transaction states.
+
+See [`architecture.md`](architecture.md#terminal-result-local-apply).
+
+## Allow explicit manual confirmation only for ambiguous pending UPDATEs
+
+### Decision
+
+Provide `confirm-pending-update <article-id>` as a maintenance operation for an UPDATE that remains `PENDING` because normal observation cannot establish that the candidate deployment changed the remote observation.
+
+Allow manual confirmation only when:
+
+- the pending operation is `UPDATE`;
+- normal UPDATE result classification still returns `PENDING`;
+- the user has verified in the Zenn Dashboard that the target deployment completed successfully; and
+- the user has verified that the current remote content equals the candidate `{article-artifact}`.
+
+Treat successful manual confirmation as the same semantic `SUCCESS` as a normally observed UPDATE success.
+
+Reuse the normal UPDATE SUCCESS terminal-result local apply rather than defining a separate state transition or successful-state representation.
+
+### Rationale
+
+An UPDATE may legitimately deploy without producing an observable change that distinguishes the post-deploy `{zenn-observation}` from its `{baseline-observation}`.
+
+Keeping such a candidate permanently `PENDING` would make recovery impossible even when the user can independently verify both the deployment result and the resulting article content.
+
+At the same time, automatically treating an unchanged observation as success would weaken the safety boundary because the checker could not prove that the candidate became effective.
+
+Manual confirmation makes that uncertainty explicit and places the unverifiable content-equality decision at a deliberate user trust boundary.
+
+Reusing normal UPDATE SUCCESS processing avoids creating a second kind of successful UPDATE state.
+
+### Consequences
+
+`confirm-pending-update` is not a general override for `UNKNOWN`, `ERROR`, or other operations.
+
+If a fresh observation already classifies the UPDATE as `SUCCESS`, the maintenance command is unnecessary and normal `check` is used instead.
+
+If the result is `UNKNOWN` or `ERROR`, manual confirmation is prohibited.
+
+Successful confirmation updates the same successful release, released snapshot, successful Zenn observation, and pending state that normal UPDATE SUCCESS would update.
+
+The common idempotent terminal-result recovery rules also apply if manual confirmation is interrupted.
+
+After manual confirmation, `check` is run again so that overall `COMMIT_READY` / `NOT_READY` is determined across all articles.
+
+See [`architecture.md`](architecture.md#confirm-pending-update-article-id).
 
 ## Use `[skip ci]` for management-only commits
 
@@ -325,28 +427,60 @@ Management and cleanup commits after `COMMIT_READY` do use it.
 
 See [`architecture.md`](architecture.md#deploy-branch).
 
-## Adopt intentional out-of-band remote edits explicitly
+## Reconcile intentional remote drift through one-shot authorization and the normal UPDATE workflow
 
 ### Decision
 
-Provide `state checker import --adopt-remote` for intentional article changes made outside the authoring workflow, such as an emergency Zenn Web UI edit.
+Do not import an intentional out-of-band remote edit directly into confirmed ledger state.
 
-Adopt such a change explicitly as a new successful release after the authoring source has been reconciled with the current remote content.
+Instead, reconcile the intended remote content into the authoring source, declare the next release, and use the normal UPDATE publish workflow to establish that content as a new successful release.
+
+When UPDATE preflight detects remote drift, require the user to explicitly authorize the reviewed current remote state with a one-shot `{observation-override}`.
+
+The override contains exactly one `{zenn-observation}` and is valid only when the current remote observation exactly matches that value.
+
+A successful override-assisted preflight uses the current remote observation as the UPDATE `{baseline-observation}` and proceeds through the ordinary UPDATE pending, deployment, and result-confirmation workflow.
+
+Remove the override from the authoring source after the corresponding successful release has been confirmed.
 
 ### Rationale
 
-An intentional remote content change is different from remote metadata drift.
+An intentional Zenn-side edit contains two distinct concerns:
 
-Silently updating only the remote observation would lose the content change from authoring history, while treating it as an ordinary pending deployment would misrepresent how the change was created.
+- the remote content must be reconciled back into the authoritative authoring source; and
+- the remote drift that would normally block UPDATE preflight must be explicitly reviewed and authorized.
 
-Explicit adoption preserves the article's managed history while making the already-established remote content the next successful release.
+Updating ledger successful state directly from the existing remote publication would bypass the normal release workflow and make successful state describe content that had not passed through the normal UPDATE candidate, pending, and confirmation process.
+
+A one-shot observation authorization solves the narrower problem: it allows preflight to accept the specific remote state the user has reviewed without treating that authorization itself as successful publication state.
+
+Reusing the normal UPDATE workflow keeps one definition of successful UPDATE regardless of whether the baseline remote state came from the previous managed publication or from an explicitly reviewed emergency remote edit.
+
+Exact equality between the current remote observation and `{observation-override}` also prevents an authorization from silently covering an additional remote change that occurred after the user reviewed the original drift.
 
 ### Consequences
 
-Adoption is an explicit user action with strict preconditions.
+`{observation-override}` does not update:
 
-It does not create `pending_next_state`, run normal preflight, or perform image mirror synchronization.
+- ledger confirmed state;
+- the released snapshot;
+- the successful release; or
+- the successful Zenn observation.
 
-After adoption, normal commit-readiness checking is used and the management changes are committed with `[skip ci]`.
+The override is planning and preflight input only. It is not stored in `pending_next_state`.
 
-See [`architecture.md`](architecture.md#import---adopt-remote).
+After successful preflight, only the resulting `{baseline-observation}` is carried into the normal pending UPDATE.
+
+The override applies only to an UPDATE candidate declaring the next release and is not retained as historical state or carried into later releases.
+
+If the current remote observation no longer equals the override, preflight fails and the newer remote state must be reviewed explicitly.
+
+If the current observation already equals the ledger successful Zenn observation, the override is stale or unnecessary and preflight fails rather than silently accepting it.
+
+The resulting UPDATE is confirmed through normal `check` when possible. If it remains eligible `PENDING`, `confirm-pending-update` may be used under its separate user-verification rules.
+
+After successful release confirmation, the source override is removed without incrementing the release number.
+
+This design intentionally replaces a separate remote-adoption/import transaction with explicit authorization followed by the ordinary UPDATE lifecycle.
+
+See [`architecture.md`](architecture.md#update-preflight) and [`use-cases.md`](use-cases.md#us-10-reconcile-an-emergency-zenn-side-edit).
