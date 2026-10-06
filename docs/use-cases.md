@@ -264,7 +264,7 @@ The deploy worktree must be clean when the publish workflow begins.
 - Successful push alone does not advance the successful release.
 - Only `SUCCESS` advances the ledger successful release to `N+1`.
 - Only `SUCCESS` replaces the released snapshot with the candidate artifact.
-- `PENDING`, `COLLISION`, `UNKNOWN`, and `ERROR` do not advance the previous successful state.
+- A normal `check` result of `PENDING`, `COLLISION`, `UNKNOWN`, or `ERROR` by itself does not advance the confirmed successful state.
 - Converter and state checker do not modify the authoring source.
 
 ### Guard Cases
@@ -558,7 +558,16 @@ For each pending article, `check` determines one of the following semantic resul
 - `COLLISION`: the failed CREATE/RECREATE candidate is cleaned up without advancing confirmed management state;
 - `UNKNOWN` or `ERROR`: previous successful state remains and the candidate remains unresolved.
 
-If any article remains `PENDING`, wait as appropriate and run `check` again. Do not trigger another deployment in the meantime.
+If an article remains `PENDING`, normally wait as appropriate and run `check` again without triggering another deployment.
+
+For an eligible pending `UPDATE`, the user may instead use manual confirmation when both of the following have been verified:
+
+- the target deployment completed successfully in the Zenn Dashboard; and
+- the current remote content equals the candidate `{article-artifact}`.
+
+In that case, run `confirm-pending-update <article-id>` to establish the UPDATE as `SUCCESS`.
+
+After `confirm-pending-update`, run `check` again to re-evaluate overall `COMMIT_READY` / `NOT_READY`.
 
 After per-article results have been applied locally, `check` determines global commit readiness as either `COMMIT_READY` or `NOT_READY`.
 
@@ -580,7 +589,7 @@ After replacing image content at the same path, the visible image may take some 
 
 - The checker is one-shot and does not long-poll.
 - Only article `SUCCESS` advances confirmed article management state.
-- `PENDING`, `COLLISION`, `UNKNOWN`, and `ERROR` do not advance article successful state.
+- A normal `check` result of `PENDING`, `COLLISION`, `UNKNOWN`, or `ERROR` by itself does not advance confirmed article management state.
 - Successful `git push` is not treated as Zenn deployment success.
 - Article API success is not treated as proof of image deployment success.
 - Image-only deployment does not change article release, ledger state, or released snapshots.
@@ -592,9 +601,9 @@ After replacing image content at the same path, the visible image may take some 
 
 ### Failure and Recovery Cases
 
-- `PENDING`: preserve previous successful state and rerun the one-shot check later.
+- `PENDING`: preserve the previous successful state and normally rerun the one-shot check later. For an eligible pending `UPDATE`, manual confirmation through `confirm-pending-update` may be used after the required Dashboard and remote-content checks, followed by another `check`.
 - `COLLISION`: preserve confirmed management state, commit the cleanup when ready, then return to slug resolution.
-- `UNKNOWN` / `ERROR`: preserve pending and successful state, inspect the cause, and use check, reconcile, or `discard-all-pendings` as appropriate.
+- `UNKNOWN` / `ERROR`: preserve pending and successful state, inspect and resolve the cause, rerun `check`, or use `discard-all-pendings` as appropriate.
 - Image `ERROR`: diagnose using the Zenn Dashboard and correct the authoring inputs; article semantic state remains independent.
 
 ### End states
@@ -636,78 +645,197 @@ After replacing image content at the same path, the visible image may take some 
 - management and cleanup changes must not be committed;
 - local changes for already-terminal articles remain in the deploy worktree until a later check reaches `COMMIT_READY`.
 
-## US-10 Adopt an emergency Zenn-side edit
+## US-10 Reconcile an emergency Zenn-side edit
 
 ### Purpose
 
 Reconcile an intentional emergency edit made directly through the Zenn Web UI or another out-of-band mechanism when the normal authoring workflow was unavailable.
 
-The already-established remote article change is adopted as a new successful release.
+The already-established remote change is not imported directly into confirmed ledger state. Instead, the authoring source is reconciled with the intended remote change and the change is confirmed as a new successful release through the normal `UPDATE` publish workflow.
+
+Accepting remote drift must not advance confirmed successful state before the normal publish workflow succeeds.
 
 ### Initial state
 
-- source state must be `active`;
+- source state is `active`;
 - the target article has ledger confirmed state `active`;
 - successful release is `N`;
-- the user's Zenn publication differs from released snapshot `N`;
-- no `pending_next_state` exists;
-- the user has confirmed that the remote change is intentional.
+- the current own-user Zenn publication has changed from the successful Zenn observation recorded for release `N`;
+- no `pending_next_state` exists; and
+- the user has confirmed that the emergency remote change is intentional.
 
 ### Flow
 
-1. Obtain the current remote article content.
+1. Inspect the current remote article content.
    - Individual Markdown output or content export may be used.
-   - If export is insufficient, use Web UI inspection and `git diff` to reconcile manually.
-2. Apply only the intended remote changes to the authoring source.
-3. Set source release to `N+1`.
-4. Commit the source and make it clean.
-5. Run `state checker import --adopt-remote`.
-   - Before running `import --adopt-remote`: the deploy worktree must be clean.
-6. Run `state checker check`.
-7. If the result is `COMMIT_READY`, review the deploy management changes.
-8. Commit and push those management changes with `[skip ci]`.
+   - If the exported content is insufficient to reconstruct the intended source changes, inspect the Zenn Web UI and use comparison tools such as `git diff` to reconcile the content manually.
+
+2. Reconcile the intended remote changes into the authoring source.
+   - Apply only the remote changes that are intended to be preserved.
+   - Keep the existing `{article-id}`.
+   - Keep the existing `{slug}`.
+   - Change source release from `N` to exactly `N+1`.
+
+3. Commit the reconciled authoring source and make the participating source clean.
+
+4. Run the normal publish workflow once without an observation override.
+   - The converter classifies the article as an `UPDATE` candidate.
+   - UPDATE preflight observes the current remote publication.
+   - Because the current remote observation differs from the ledger successful Zenn observation and no `{observation-override}` is present, preflight returns `ERROR` for remote drift.
+   - The checker reports:
+     - the ledger successful Zenn observation;
+     - the current remote observation; and
+     - the current observation in the JSON representation suitable for `#observation-override`.
+   - The candidate is not applied to the deploy worktree.
+   - No `pending_next_state` is created.
+
+5. Review the reported current remote observation.
+   - Confirm that it represents the remote state whose intended changes were reconciled into the authoring source.
+   - If it does, add that exact value to the source as `{observation-override}`.
+   - Commit the authoring source and make it clean again.
+
+6. Run the normal publish workflow again.
+   - UPDATE preflight requires the current remote observation to exactly match `{observation-override}`.
+   - If they match and the observation still differs from the ledger successful Zenn observation, preflight succeeds.
+   - The current remote observation becomes the UPDATE `{baseline-observation}`.
+   - The candidate is deployed through the normal UPDATE workflow.
+   - `pending_next_state` records the UPDATE candidate and its `{baseline-observation}`.
+   - Review the deploy diff, commit the deploy branch, and push it normally.
+
+7. Run `state checker check`.
+
+   If the UPDATE result is `SUCCESS`:
+   - confirm release `N+1` using the normal UPDATE SUCCESS processing.
+
+   If the UPDATE result remains `PENDING`:
+   - normally, another one-shot `check` may be run later without starting a new deployment;
+   - if manual confirmation is appropriate, the user must first verify:
+     - that the target deployment completed successfully in the Zenn Dashboard; and
+     - that the current remote content equals the candidate `{article-artifact}`;
+   - then run `state checker confirm-pending-update <article-id>`;
+   - the pending UPDATE is confirmed using the same terminal-result local apply as normal UPDATE SUCCESS.
+
+   If the result is `UNKNOWN` or `ERROR`:
+   - do not advance successful state;
+   - retain the pending candidate; and
+   - follow the normal recovery procedure.
+
+8. After release `N+1` has been confirmed successful:
+   - remove `{observation-override}` from the authoring source;
+   - keep source release at `N+1`;
+   - do not otherwise change the reconciled article content;
+   - commit the override cleanup and make the authoring source clean.
+
+9. Run `state checker check` again to confirm overall commit readiness.
+
+10. When the result is `COMMIT_READY`:
+    - review the deploy worktree management changes;
+    - commit and push them with `[skip ci]`.
 
 ### Acceptance Criteria
 
-- Intentional Web UI or other remote edits can be brought back under authoring management.
-- A real remote article-content change is not treated merely as observation metadata drift.
-- The adopted article artifact becomes a new release.
-- Released snapshot becomes the adopted article artifact.
-- Successful Zenn observation becomes the current remote observation.
-- Slug and article identity remain unchanged.
-- No `pending_next_state` is generated.
-- Confirmed ledger, released snapshot, and deploy artifact are consistent after adoption.
-- The management commit does not trigger another deployment.
+- An intentional Zenn Web UI or other out-of-band edit can be brought back under authoring management.
+- The remote change is confirmed as a new successful release through the normal `UPDATE` publish workflow.
+- Accepting remote drift through `{observation-override}` alone does not change confirmed successful ledger state.
+- `{observation-override}` authorizes only the specific remote observation explicitly reviewed by the user.
+- Publishing does not proceed when the current remote observation differs from `{observation-override}`.
+- The current remote observation from successful UPDATE preflight becomes the pending UPDATE `{baseline-observation}`.
+- If normal `check` can observe UPDATE success, release `N+1` is confirmed through the normal SUCCESS path.
+- If normal `check` remains `PENDING`, `confirm-pending-update` may establish SUCCESS only after the user has verified both deployment completion and remote-content equality.
+- On successful confirmation:
+  - ledger successful release becomes `N+1`;
+  - released snapshot becomes the candidate `{article-artifact}`;
+  - successful Zenn observation becomes the current remote observation used when SUCCESS is confirmed;
+  - the article is removed from `pending_next_state`.
+- `{article-id}` and `{slug}` are preserved.
+- `{observation-override}` is removed from the source after successful release confirmation.
+- Adding or removing `{observation-override}` does not itself increment the article release number.
+- Management changes are committed only after overall `COMMIT_READY`.
+- The management commit uses `[skip ci]` and does not trigger another Zenn deployment.
+
+### Examples
+
+#### Emergency typo correction
+
+Suppose release `5` is the confirmed successful release and the authoring tool is temporarily unavailable.
+
+1. Correct the typo through the Zenn Web UI.
+2. After the authoring environment is available again, inspect the current Zenn article and apply the intended correction to the authoring source.
+3. Change source release to `6` and commit it.
+4. Run the normal publish workflow.
+5. UPDATE preflight detects remote drift and reports the current remote observation.
+6. Confirm that the reported observation represents the emergency edit.
+7. Add that observation as `{observation-override}` and commit the source.
+8. Run the normal publish workflow again.
+9. The UPDATE candidate is deployed and recorded as pending.
+10. Run `check`.
+    - If it returns `SUCCESS`, release `6` is confirmed normally.
+    - If it remains `PENDING`, verify successful deployment in the Zenn Dashboard and verify that remote content equals the candidate artifact, then use `confirm-pending-update`.
+11. Remove `{observation-override}` from the source and commit the cleanup.
+12. Confirm `COMMIT_READY` with `check`.
+13. Commit and push the management changes with `[skip ci]`.
+
+#### Exported Markdown differs from the authoring source
+
+If individual Markdown output or exported content differs from the authoring representation:
+
+- do not replace the authoring source blindly with the exported Markdown;
+- compare the export, current source, and Zenn Web UI as necessary;
+- manually apply only the intended remote changes; and
+- continue with the normal US-10 workflow after reconciliation is complete.
+
+#### Replace the emergency edit with different content later
+
+If the emergency change should later be replaced rather than retained permanently:
+
+1. first confirm the emergency remote change as release `N+1` through this workflow;
+2. remove `{observation-override}`;
+3. edit the authoring source normally; and
+4. publish the replacement as release `N+2` through the ordinary UPDATE workflow.
+
+The emergency edit is therefore represented as a real successful release rather than being silently overwritten in management history.
 
 ### Failure and Guard Cases
 
-Adoption must not proceed when, for example:
+The workflow must not proceed when, for example:
 
-- `pending_next_state` exists;
+- `pending_next_state` already exists; resolve the existing pending workflow before starting another publish workflow;
 - the remote article belongs to another user;
-- source slug differs from the confirmed ledger slug;
-- source release is not `N+1`;
-- the user has not sufficiently reconciled the remote content;
-- an unexpected remote change is discovered.
-- the reconciled source artifact still equals released snapshot `N`; use the default import workflow when only remote metadata needs reconciliation.
+- source `{slug}` differs from the ledger confirmed `{slug}`;
+- source release is not exactly `N+1`;
+- the user has not sufficiently reconciled the intended remote content into the authoring source;
+- `{observation-override}` does not equal the current remote observation;
+- an unexpected remote change is discovered while reviewing the observation;
+- an old `{observation-override}` remains after its successful release has already been confirmed;
+- an UPDATE remains `PENDING` but the user cannot confirm successful completion of the target deployment in the Zenn Dashboard; or
+- an UPDATE remains `PENDING` but the user cannot confirm that current remote content equals the candidate `{article-artifact}`.
 
-Unexpected remote content must be reconciled manually rather than automatically adopted.
+If the remote observation changes after `{observation-override}` is created, preflight fails rather than authorizing the newer remote state.
+
+If the user cannot establish that the remote change is intentional and correctly reconciled, the override must not be added and publishing must not proceed.
+
+`confirm-pending-update` must not be used unless both of its user-verification conditions are satisfied.
 
 ### Unverified behavior
 
-The following remain intentionally unverified and may require changes to the reconcile procedure after practical testing:
+The following remain intentionally unverified and may require changes to the reconciliation procedure after practical testing:
 
 - whether Zenn individual Markdown output or content export can fully reconstruct the authoring source;
 - differences between Web UI edits and exported Markdown;
-- whether all Front Matter fields survive as expected;
-- handling of images or image references introduced from the Web UI.
+- whether all Front Matter fields survive export as expected;
+- handling of images or image references introduced through the Web UI;
+- whether the Zenn observation changes after a GitHub deployment when the candidate article content is already identical to the current remote content.
+
+If practical validation reveals gaps, the reconciliation procedure should be revised without weakening the requirement that remote drift be explicitly reviewed before publication.
 
 ### End state on SUCCESS
 
-- authoring source is semantically aligned with the adopted Zenn article;
+- the authoring source is semantically aligned with the intended Zenn-side emergency change;
 - source release and ledger successful release are both `N+1`;
-- released snapshot is the adopted article artifact;
-- successful Zenn observation is the current remote observation;
+- no `{observation-override}` remains in the source;
+- released snapshot equals the release `N+1` candidate `{article-artifact}`;
+- successful Zenn observation is the current remote observation from successful release confirmation;
 - deploy `/articles/<slug>.md` equals the released snapshot;
 - `pending_next_state` is empty;
-- deploy worktree is clean after the management commit.
+- the deploy worktree is clean after the `[skip ci]` management commit; and
+- the authoring source is clean after the observation-override cleanup commit.
