@@ -379,7 +379,9 @@ Represent unresolved article deployment candidates in `pending_next_state`.
 
 While any pending article exists, do not allow another deployable publish candidate to be applied or persisted.
 
-Temporary candidate artifacts and publish-plan entries may still be constructed as in-memory planning data. Preflight enforces the pending guard before any such plan is applied to the deploy worktree.
+While any pending article exists, the converter fails before constructing new candidate artifacts, image mirror differences, or a publish plan.
+
+Preflight may defensively verify the same invariant, but the converter-entry guard is the primary serialization boundary.
 
 Image-only changes do not create pending article state.
 
