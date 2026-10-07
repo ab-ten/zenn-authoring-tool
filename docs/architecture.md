@@ -146,6 +146,27 @@ Each released snapshot is stored as:
 
 Exactly one latest successful `{article-artifact}` is retained for each `{article-id}`.
 
+### Released snapshot invariant
+
+For every ledger-managed article with successful release `N`, exactly one released snapshot exists and represents the `{article-artifact}` of successful release `N`.
+
+This invariant applies whether the ledger confirmed state is `active` or `erased`.
+
+A successful `DELETE`:
+
+- does not create a new `{release-number}`;
+- does not modify the released snapshot; and
+- leaves the snapshot representing the last successfully published `{article-artifact}` from before deletion.
+
+Therefore, for an `erased` article, the retained released snapshot remains the artifact baseline for a later `RECREATE`.
+
+When `RECREATE` is classified:
+
+- if the candidate `{article-artifact}` equals the retained released snapshot for successful release `N`, the candidate uses release `N`;
+- if it differs, the candidate uses release `N+1`.
+
+On successful `RECREATE`, the released snapshot is atomically replaced with the candidate `{article-artifact}`. If it already equals the candidate artifact, the replacement is an idempotent no-op.
+
 #### `ledger.json`
 
 `ledger.json` stores confirmed article state and unresolved publish candidates.
