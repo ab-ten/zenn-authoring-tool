@@ -4,27 +4,71 @@
 
 This document defines the domain concepts and state semantics used by the Zenn authoring tool.
 
-It describes what each domain value means and how the source, confirmed state, and unresolved publish candidate relate to one another. Concrete file formats, ledger field layout, validation rules, transition classification, remote checks, recovery procedures, and command workflows are defined outside this document.
+It describes what each domain value means and how the authoring-side intent, confirmed state, and unresolved article transitions relate to one another. Concrete file formats, ledger field layout, validation rules, transition classification, remote checks, recovery procedures, and command workflows are defined outside this document.
 
-## Notation
+## Representation terminology
 
-### `{concept-name}`
+The following terms distinguish storage-independent content from filesystem representations.
 
-A value written as `{concept-name}` denotes a value whose semantics are defined as a domain concept in this document.
+### content
 
-The braces are meta notation and are not part of the actual value.
+Content denotes information or a value independently of where it is stored.
 
-## Article artifact and release
+Content may exist only as an in-memory value and does not imply that a corresponding file exists.
 
-### `{article-artifact}`
+### artifact
 
-`{article-artifact}` is the Markdown artifact for one article that is deployed to Zenn.
+An artifact is a file materialized on the filesystem.
 
-It is generated from the authoring source by removing the authoring-tool management comments. It contains the Zenn Front Matter and the article body.
+A term ending in `artifact` refers to a file rather than to abstract storage-independent content.
+
+### authoring source
+
+An authoring source is an input article file in the authoring worktree.
+
+It may contain authoring-tool management comments in addition to the article content intended for Zenn.
+
+### candidate article content
+
+Candidate article content is a temporary `{article-content}` generated inside the converter from an authoring source.
+
+It exists only while the converter is processing the article and is used for release determination, operation classification, and publish-plan generation.
+
+After it has been materialized as a deploy artifact, it is not treated as a persistent candidate object.
+
+### deploy artifact
+
+A deploy artifact is an article file materialized at `deploy /articles/<slug>.md`.
+
+It is the local article file used when the state checker needs the article content represented by the deploy worktree.
+
+### released snapshot
+
+A released snapshot is the file stored at `/.zenn-authoring/released/<article-id>.md`.
+
+It contains the latest successful `{article-content}` for the logical article.
+
+### remote article content
+
+Remote article content is the article content currently provided by the corresponding publication on Zenn.
+
+## Article content and release
+
+### `{article-content}`
+
+`{article-content}` is the storage-independent Markdown content for one article to be deployed to Zenn.
+
+It is generated from the authoring source by removing authoring-tool management comments and contains the Zenn Front Matter and article body.
+
+`{article-content}` describes content rather than a particular filesystem representation.
+
+During conversion, an authoring source produces candidate article content. When that content is materialized into the deploy worktree, it becomes the content of a deploy artifact. The candidate article content does not persist as a separate object after that materialization.
+
+A successful `CREATE`, `UPDATE`, or `RECREATE` establishes the corresponding deploy artifact content as the latest successful `{article-content}`, which is retained in the released snapshot.
 
 ### `{release-number}`
 
-`{release-number}` identifies the revision sequence of `{article-artifact}` for one logical article. In practical terms, it is the version number of the article artifact.
+`{release-number}` identifies the revision sequence of `{article-content}` for one logical article. In practical terms, it is the version number of the article content.
 
 A `{release-number}`:
 
@@ -34,16 +78,98 @@ A `{release-number}`:
 - does not skip numbers; and
 - is not a deploy-attempt number.
 
-Redeploying the same `{article-artifact}` does not increment `{release-number}`.
+Redeploying the same `{article-content}` does not increment `{release-number}`.
 
-If the latest `{article-artifact}` is unchanged, the same `{release-number}` is used.
+If the latest release's `{article-content}` is unchanged, the same `{release-number}` is used.
 
-If the latest `{article-artifact}` has changed, the next `{release-number}` is used. This applies even when the new artifact is identical to an older release: if it differs from the latest release, the number increases by one.
+If the `{article-content}` differs from the latest release, the next `{release-number}` is used. This applies even when the new content is identical to an older release: if it differs from the latest release, the number increases by one.
 
-Changes that are not part of `{article-artifact}` do not increment `{release-number}`. In particular:
+Changes that are not part of `{article-content}` do not increment `{release-number}`. In particular:
 
 - image-only changes do not increment it; and
 - changes only to authoring-tool management information do not increment it.
+
+## Pending article transition
+
+`pending_next_state` stores article transitions whose publish result has not yet been established as successful.
+
+A pending article transition represents a change that has already been reflected into the deploy worktree by conversion but whose resulting successful state is still unresolved.
+
+It is not:
+
+- persistent candidate article content;
+- a persistent publish-candidate object; or
+- the Zenn-side deploy status itself.
+
+At this stage, candidate article content no longer exists as a separate object. Local article content is represented by the deploy artifact.
+
+A pending article transition remains unresolved until one of the following occurs:
+
+- `SUCCESS`: the confirmed successful state is updated and the pending entry is removed;
+- `confirm-pending-update`: an eligible UPDATE transition is established as successful from explicit user confirmation, using the same successful-result semantics as normal UPDATE success;
+- `COLLISION`: the failed deploy artifact is cleaned up, the previously confirmed successful state is preserved, and the pending entry is removed; or
+- `discard-all-pendings`: the user explicitly abandons all unresolved article transitions while preserving the previously confirmed successful state.
+
+The detailed eligibility rules, local validation, remote classification, cleanup procedures, atomic update procedures, and command workflows are defined outside this document.
+
+### `{baseline-observation}`
+
+`{baseline-observation}` is the `{zenn-observation}` used as the comparison baseline for determining whether an UPDATE transition has been reflected remotely.
+
+It is the current `{zenn-observation}` captured when UPDATE preflight succeeds.
+
+Once captured, the `{baseline-observation}` remains fixed throughout that publish workflow.
+
+`{baseline-observation}` does not represent a successful state. It represents the remote comparison point that existed before deployment.
+
+Only an UPDATE transition has a `{baseline-observation}`.
+
+### `{observation-override}`
+
+`{observation-override}` is a one-shot authorization by the user to accept a specific remote drift during UPDATE preflight.
+
+Its value is one `{zenn-observation}` representing the remote state that the user has explicitly reviewed and accepted.
+
+`{observation-override}` is used only when the current remote observation differs from the ledger's successful Zenn observation.
+
+It is not a successful state and does not by itself change:
+
+- the ledger confirmed state;
+- the released snapshot;
+- the successful release; or
+- the successful Zenn observation.
+
+An `{observation-override}` is valid only for an UPDATE in which the source declares the next release.
+
+For the override to authorize that UPDATE, the current `{zenn-observation}` must exactly equal the `{observation-override}`. If they differ, the override no longer authorizes the current remote state.
+
+When UPDATE preflight succeeds using an `{observation-override}`, the current `{zenn-observation}` becomes the `{baseline-observation}` for that UPDATE transition.
+
+An `{observation-override}` is one-shot authorization rather than history. It is removed after the corresponding successful release is confirmed and is not carried forward to later releases.
+
+## Publish operation
+
+### `{operation}`
+
+`{operation}` is the authoring tool's classification of the change that a publish workflow intends to make to a Zenn article.
+
+The defined operations are `CREATE`, `UPDATE`, `DELETE`, and `RECREATE`.
+
+#### `CREATE`
+
+`CREATE` creates a Zenn publication for an unpublished logical article.
+
+#### `UPDATE`
+
+`UPDATE` updates the `{article-content}` of an active publication.
+
+#### `DELETE`
+
+`DELETE` removes an active publication from Zenn.
+
+#### `RECREATE`
+
+`RECREATE` creates a Zenn publication again for an erased logical article.
 
 ## Article identity and publication
 
@@ -57,7 +183,7 @@ It remains unchanged throughout the lifecycle of the same logical article and is
 - `{slug}`;
 - `{release-number}`;
 - `{article-state}`; and
-- `{article-artifact}`.
+- `{article-content}`.
 
 An article keeps the same `{article-id}` when it is republished after being erased.
 
@@ -147,26 +273,6 @@ A confirmed state is either:
 
 Source state and ledger confirmed state represent different stages of confirmation and need not be equal.
 
-## Unresolved publish candidate
-
-A publish candidate may exist after conversion even though its result has not yet been confirmed as successful.
-
-Such a candidate represents an article transition whose resulting successful state is still unresolved. It is distinct from both:
-
-- the source state, which expresses the user's next intended state; and
-- the confirmed state, which records a state already confirmed to exist on Zenn.
-
-The ledger representation named `pending_next_state` stores only article transitions whose result is still unresolved. It represents the authoring tool's unresolved publish candidates and is not itself the Zenn-side deploy status.
-
-A pending candidate remains unresolved until one of the following occurs:
-
-- `SUCCESS`: the candidate is confirmed successful, its successful state is applied, and the pending entry is removed;
-- `confirm-pending-update`: for an eligible UPDATE pending, user confirmation is used to establish the same successful result as normal UPDATE success, after which the pending entry is removed;
-- `COLLISION`: the candidate is rejected because of a collision, candidate-specific generated state is cleaned up, and the pending entry is removed; or
-- `discard-all-pendings`: the user explicitly abandons all unresolved candidates.
-
-The detailed eligibility rules, remote classification rules, cleanup procedures, local apply procedure, and command workflows are defined outside this document.
-
 ## Remote observation
 
 ### `{zenn-observation}`
@@ -181,51 +287,6 @@ Its concrete representation is composed of metadata that can be obtained from th
 
 Two observations are treated as the same `{zenn-observation}` when all metadata used for update detection are equal.
 
-### `{baseline-observation}`
-
-`{baseline-observation}` is the `{zenn-observation}` used as the comparison baseline for determining whether an UPDATE candidate has been reflected remotely.
-
-It is the current `{zenn-observation}` captured when UPDATE preflight succeeds.
-
-Once the publish candidate has been generated, the `{baseline-observation}` is not changed.
-
-`{baseline-observation}` does not represent a successful state. It represents the remote comparison point that existed before deployment.
-
-Only an UPDATE candidate has a `{baseline-observation}`.
-
-### `{observation-override}`
-
-`{observation-override}` is a one-shot authorization by the user to accept a specific remote drift when publishing an UPDATE candidate.
-
-Its value is one `{zenn-observation}` representing the remote state that the user has explicitly reviewed and accepted.
-
-`{observation-override}` is used only for UPDATE preflight when the current remote observation differs from the ledger's successful Zenn observation.
-
-It is not a successful state and does not by itself change:
-
-- the ledger confirmed state;
-- the released snapshot;
-- the successful release; or
-- the successful Zenn observation.
-
-An `{observation-override}` is valid only for an UPDATE candidate in which the source declares the next release.
-
-For the override to authorize the UPDATE, the current `{zenn-observation}` must exactly equal the `{observation-override}`. If they differ, the override no longer authorizes the current remote state.
-
-When UPDATE preflight succeeds using an `{observation-override}`, that current `{zenn-observation}` becomes the candidate's `{baseline-observation}`.
-
-An `{observation-override}` is one-shot authorization rather than history. It is removed after the corresponding successful release is confirmed and is not carried forward to later releases.
-
-In an authoring source, an optional `{observation-override}` is represented by the management comment:
-
-`<!-- #observation-override:{JSON} -->`
-
-The JSON value is the concrete representation of one `{zenn-observation}`.
-
-The comment is authoring-tool management information and is therefore removed when generating `{article-artifact}`.
-
-A source contains either zero or one observation-override management comment. After the corresponding successful release is confirmed, the comment is removed from the source.
-
 ### Successful Zenn observation
 
 The ledger's successful Zenn observation is the `{zenn-observation}` of the user's own publication from the most recently confirmed successful publication result.
@@ -238,26 +299,3 @@ A successful `DELETE` does not replace it, because no current publication observ
 
 Observations of publications owned by other users are not stored as the successful Zenn observation.
 
-## Publish operation
-
-### `{operation}`
-
-`{operation}` is the authoring tool's classification of the change that a publish candidate intends to make to a Zenn article.
-
-The defined operations are `CREATE`, `UPDATE`, `DELETE`, and `RECREATE`.
-
-#### `CREATE`
-
-`CREATE` creates a Zenn publication for an unpublished logical article.
-
-#### `UPDATE`
-
-`UPDATE` updates the `{article-artifact}` of an active publication.
-
-#### `DELETE`
-
-`DELETE` removes an active publication from Zenn.
-
-#### `RECREATE`
-
-`RECREATE` creates a Zenn publication again for an erased logical article.
