@@ -117,16 +117,24 @@ The filename is based on `{slug}` and is independent of the authoring source fil
 
 ### `/images`
 
-`/images` contains image assets referenced by articles.
+`/images` contains image assets available for Zenn deployment.
 
-The deploy `/images` tree mirrors the authoritative authoring `/images` tree when the converter applies an image change.
+The authoring `/images` tree is authoritative. The deploy `/images` tree mirrors it when the converter applies an image change.
 
-Image constraints currently represented in the design are:
+Phase 0 validates every file that participates in the authoritative image mirror, not only files that differ from the current deploy tree.
 
-- each file is at most 3 MB;
-- supported extensions are `.png`, `.jpg`, `.jpeg`, `.gif`, and `.webp`.
+The Phase 0 local image constraints are:
 
-Image validation for size and extension is planned, but is not required in the first prototype.
+- the accepted extensions are exactly `.png`, `.jpg`, `.jpeg`, `.gif`, and `.webp`;
+- the accepted extension spellings are lowercase only;
+- each file must be at most `3_000_000` bytes;
+- directory structure below `/images` is unrestricted;
+- no additional filename-character restriction is imposed;
+- each mirrored Git entry must be a normal blob entry;
+- Git symlinks and gitlinks are rejected; and
+- filesystem special files are rejected.
+
+The `3_000_000`-byte limit is a conservative local interpretation of Zenn's documented 3 MB image limit.
 
 ### `/.zenn-authoring`
 
@@ -662,6 +670,29 @@ Conversion fails if:
 The source filename is not part of identity matching.
 
 `{article-id}` and `{slug}` are not combined into a composite identity.
+
+### Image validation
+
+After per-article processing and article-global checks, and before computing the image mirror difference, the converter validates the complete authoring `/images` mirror input.
+
+For each mirror input, the converter validates:
+
+- that the Git entry is a normal blob rather than a symlink or gitlink;
+- that the filesystem object is not a special file;
+- that the extension is one of the supported lowercase extensions; and
+- that the file size does not exceed `3_000_000` bytes.
+
+If any image validation fails, conversion stops before image mirror-difference calculation, publish-plan finalization, state-checker preflight, or deploy-worktree application.
+
+In particular:
+
+- image mirror synchronization does not begin;
+- deploy application does not begin; and
+- no `pending_next_state` is generated.
+
+The converter does not require an image to be referenced by Markdown.
+
+Markdown image-reference validity, including missing images and references that do not use `/images/...`, is outside Phase 0 converter validation and is checked through Zenn CLI preview and user review.
 
 ### Image mirror diff
 
@@ -1314,6 +1345,8 @@ An image-only change:
 If an article Markdown image reference changes, the Markdown artifact changes and the normal article release rules apply.
 
 Unused images are not removed merely because no active article currently references them. Removal is explicit through the authoritative authoring `/images` mirror.
+
+Before mirror synchronization, the complete authoritative image tree is subject to the Phase 0 image validation rules defined above. This validation concerns deployability of image files, not article-reference ownership or image lifecycle.
 
 Preview uses the authoring image tree directly through a symlink.
 

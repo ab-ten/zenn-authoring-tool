@@ -567,10 +567,11 @@ Before deployment, authoring `/images` changes must be committed and clean.
 Then:
 
 1. run the converter;
-2. review the deploy diff;
-3. do not push if the diff contains unintended image additions, changes, or removals;
-4. commit and push the deploy branch;
-5. follow US-09 to inspect deployment results.
+2. if local image validation fails, stop without modifying the deploy worktree;
+3. review the deploy diff;
+4. do not push if the diff contains unintended image additions, changes, or removals;
+5. commit and push the deploy branch;
+6. follow US-09 to inspect deployment results.
 
 ### Acceptance Criteria
 
@@ -579,13 +580,16 @@ Then:
 - No preview-only image copies are required.
 - Authoring `/images` is authoritative.
 - Deploy `/images` mirrors authoring `/images`.
-- Unused images are not automatically removed.
+- Unused images are allowed and are not automatically removed.
 - Images referenced only by erased articles are not automatically removed.
 - Replacing image bytes at the same path does not increment article release.
 - Image-only changes do not change article ledger state or released snapshots.
 - Changing an image reference in article Markdown is an article-artifact change and follows the normal article release rules.
 - Any asset placed under authoring `/images` must be safe to synchronize to Zenn.
 - Private, secret, or otherwise non-deployable assets must not be stored there.
+- Conversion fails before deploy-worktree modification if any mirror input has an unsupported extension, exceeds the Phase 0 local size limit, is not a normal Git blob, or is a filesystem special file.
+- Lack of a Markdown reference does not by itself make an image invalid.
+- Phase 0 does not require the converter to detect missing image references, invalid relative image references, or deletion of an image still referenced by an article.
 
 ### Failure Cases
 
@@ -593,13 +597,19 @@ Examples include:
 
 - dirty or untracked authoring `/images` at deployment time;
 - unintended image deletion in the deploy diff;
-- invalid image reference paths;
-- unsupported image extension;
-- image larger than 3 MB;
+- an image mirror input that is a Git symlink or gitlink;
+- a filesystem special file under the image mirror input;
+- an unsupported or non-lowercase image extension;
+- an image larger than the `3_000_000`-byte local limit;
+- an invalid Markdown image reference path;
 - deleting an image still referenced by a published article;
 - Zenn-side image deployment failure.
 
-No fixed automatic recovery is defined for image deployment errors. The user corrects the authoritative authoring inputs according to the failure and runs the normal workflow again.
+Invalid image entries, unsupported extensions, and oversized images cause converter `ERROR` before the deploy worktree is modified.
+
+Invalid Markdown reference paths and deletion of still-referenced images are not automatically detected by the Phase 0 converter. They are guarded by Zenn CLI preview and user review.
+
+No fixed automatic recovery is defined for Zenn-side image deployment errors. The user corrects the authoritative authoring inputs according to the failure and runs the normal workflow again.
 
 ### End state on SUCCESS
 

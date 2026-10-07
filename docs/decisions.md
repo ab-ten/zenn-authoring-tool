@@ -576,3 +576,40 @@ After successful release confirmation, the source override is removed without in
 This design intentionally replaces a separate remote-adoption/import transaction with explicit authorization followed by the ordinary UPDATE lifecycle.
 
 See [`architecture.md`](architecture.md#update-preflight) and [`use-cases.md`](use-cases.md#us-10-reconcile-an-emergency-zenn-side-edit).
+
+## Validate image deployability without introducing image reference lifecycle
+
+### Decision
+
+In Phase 0, validate the complete authoritative authoring `/images` tree before image mirror synchronization.
+
+Validate only the local properties required to keep obviously invalid image inputs from reaching Zenn deployment:
+
+- supported lowercase extension;
+- conservative local file-size limit;
+- normal Git blob entry; and
+- absence of filesystem special-file inputs.
+
+Do not introduce Markdown reference-graph analysis, image ownership, unused-image rejection, image decoding, MIME inspection, or dimension inspection in Phase 0.
+
+### Rationale
+
+The purpose of Phase 0 image validation is to prevent known invalid deployment inputs from reaching Zenn while preserving the existing simple mirror model.
+
+Zenn documents concrete constraints for repository image size and supported extensions. Enforcing those constraints locally removes predictable deployment failures without creating an article-to-image lifecycle model.
+
+Reference-graph analysis would expand converter responsibility into Markdown interpretation and image lifecycle management. It is not required to preserve the current invariant that authoring `/images` is an authoritative mirror whose assets may exist independently of article state.
+
+### Consequences
+
+Every mirror input is validated, including unchanged images.
+
+An invalid image input prevents deploy-worktree application and creation of new pending article state for that conversion.
+
+Unused images remain valid.
+
+Missing image references, invalid relative references, and deletion of images still referenced by published content remain preview and user-review responsibilities in Phase 0.
+
+Image-content validation may be considered later if operational evidence shows that extension and size validation are insufficient.
+
+See [`architecture.md`](architecture.md#image-validation).
