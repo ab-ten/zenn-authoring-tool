@@ -436,9 +436,74 @@ If source state is `active`, Front Matter must have `published: true`; otherwise
 
 ### Release and slug validation
 
-Release and slug validation is operation-specific.
+Release and slug validation is performed after `{operation}` has been classified.
 
-The detailed validation must preserve the operation selected by state classification rather than infer a new operation from release or slug values.
+Validation must not reclassify the operation.
+
+#### Release validation
+
+For `CREATE`:
+
+- source `#release` must be `1`;
+- otherwise conversion fails.
+
+For an article whose ledger successful release is `N`, `UPDATE` / `RECREATE` validation uses candidate-artifact equality:
+
+- if candidate `{article-artifact}` equals released snapshot `N`, source `#release` must be `N`;
+- if candidate `{article-artifact}` differs from released snapshot `N`, source `#release` must be exactly `N+1`;
+- otherwise conversion fails.
+
+For `DELETE`:
+
+- source `#release` must equal ledger successful release `N`;
+- `{article-artifact}` differences are not used for DELETE release validation;
+- otherwise conversion fails.
+
+For source state `hold`, release transition validation is not performed.
+
+For an `active` article for which no publish operation was generated:
+
+- ledger confirmed state is `active`;
+- candidate `{article-artifact}` equals the released snapshot for successful release `N`;
+- source `#release` must remain `N`;
+- otherwise conversion fails.
+
+#### Slug validation
+
+Every publish candidate must have a `{slug}`.
+
+The `{slug}` must satisfy the domain constraints for allowed characters and length.
+
+A candidate `{slug}` must not equal the ledger confirmed `{slug}` of a different `{article-id}`.
+
+For `CREATE`:
+
+- no confirmed slug exists for the article;
+- remote availability of the candidate slug is checked by state-checker preflight.
+
+For `UPDATE`:
+
+- source `{slug}` must equal ledger confirmed `{slug}`;
+- otherwise conversion fails.
+
+For `DELETE`:
+
+- source `{slug}` must equal ledger confirmed `{slug}`;
+- otherwise conversion fails.
+
+For `RECREATE`:
+
+- if source `{slug}` equals ledger confirmed `{slug}`, that slug is used as the recreate candidate;
+- if source `{slug}` differs from ledger confirmed `{slug}`, local validation permits the candidate;
+- whether that slug change is allowed is determined by state-checker RECREATE preflight from the remote state of the previous confirmed slug.
+
+For source state `hold`, slug transition validation is not performed.
+
+For an `active` article for which no publish operation was generated:
+
+- ledger confirmed state is `active`;
+- source `{slug}` must equal ledger confirmed `{slug}`;
+- otherwise conversion fails.
 
 ### Candidate artifact generation
 
