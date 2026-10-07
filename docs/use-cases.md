@@ -8,6 +8,113 @@ It focuses on why and when each workflow is used, the expected user actions, obs
 
 Detailed converter behavior, state-checker algorithms, ledger representation, publish-plan construction, remote observation rules, and recovery mechanics are defined in `architecture.md`. Domain values and lifecycle semantics are defined in `domain.md`.
 
+## US-00 Initialize a Zenn authoring repository
+
+### Purpose
+
+Create the authoring/deploy worktree structure, establish the repository's Zenn account identity, initialize empty management state, and leave the repository ready for the normal publish workflow.
+
+### Initial state
+
+- host Git is version 2.48 or later;
+- the target authoring directory exists;
+- the Zenn username to manage is known;
+- required GitHub/Zenn repository-integration information is available.
+
+### Flow
+
+1. Prepare the authoring Git repository on the host.
+
+   If the directory is not yet a Git repository:
+
+   `git init -b <authoring-branch>`
+
+   If it is already a Git repository, use the existing authoring branch.
+
+2. On the authoring branch:
+   - add `/_deploy/` to `.gitignore`;
+   - create and commit any required initial authoring files;
+   - make the authoring worktree clean.
+
+3. Configure relative worktree links:
+
+   `git config worktree.useRelativePaths true`
+
+4. Create the deploy linked worktree:
+
+   `git worktree add --orphan -b deploy _deploy`
+
+5. Prepare:
+
+   `/_deploy/.zenn-authoring/`
+
+6. Run:
+
+   `state checker init <zenn-username>`
+
+7. The checker:
+   - resolves the username through the Zenn user API;
+   - records the numeric `{zenn-user-id}`;
+   - creates a canonical empty `ledger.json`;
+   - creates `config.json`.
+
+8. Review the deploy-worktree diff.
+
+9. Commit the initial management files using `[skip ci]`.
+
+10. Push the deploy branch.
+
+### Acceptance Criteria
+
+- `/_deploy` is a linked worktree for the `deploy` branch;
+- worktree links use relative paths;
+- the authoring worktree is clean;
+- the deploy worktree is clean after the initialization commit;
+- `/.zenn-authoring/config.json` is Git-managed;
+- `/.zenn-authoring/ledger.json` is Git-managed;
+- ledger `articles` is empty;
+- ledger `pending_next_state` is empty;
+- `{zenn-user-id}` has been resolved and stored;
+- own-user publication checks use the configured numeric `{zenn-user-id}`;
+- normal converter / preflight / check workflows may begin.
+
+### Failure and Recovery Cases
+
+- Zenn username does not resolve:
+  - initialization fails;
+  - config is not created.
+- user API response is invalid:
+  - initialization fails;
+  - config is not created.
+- deploy worktree contains unrelated dirty changes:
+  - initialization fails before modifying management state.
+- initialization stops after creation of the empty ledger but before config creation:
+  - rerunning `init` may resume when the empty ledger is the only init-produced dirty change.
+- config is absent but a non-empty ledger exists:
+  - initialization fails;
+  - repository state must be inspected.
+- config exists but ledger is missing:
+  - initialization fails;
+  - ledger is not regenerated automatically;
+  - restore from Git is required.
+- config or ledger is invalid after initialization:
+  - initialization does not overwrite it automatically;
+  - restore or inspect the Git-managed state.
+- the repository is already initialized with the same `{zenn-user-id}`:
+  - report already initialized / no-op.
+- the repository is initialized with a different `{zenn-user-id}`:
+  - initialization fails;
+  - automatic account replacement is not supported in the MVP.
+
+### End state
+
+- authoring and deploy worktrees are established;
+- the deploy branch contains the initial management state;
+- configured `{zenn-user-id}` is the canonical own-user identity;
+- `ledger.json` is in canonical empty state;
+- both worktrees are clean;
+- the repository is ready for normal authoring and publish workflows.
+
 ## US-01 Write a new article
 
 ### Purpose
