@@ -410,20 +410,47 @@ Git commands that modify repository or worktree metadata are not part of convert
 
 The entire authoring worktree does not need to be clean.
 
-Articles that participate in a publish operation must be committed and clean.
+Before publish-input cleanliness is evaluated, the converter performs a minimal parse of the authoring-tool management comments sufficient to obtain source `#state`.
 
-This applies to publish-target articles whose source state is:
+This minimal parse:
 
-- `active`; or
-- `erased`.
+- is used only to determine the applicable authoring-input cleanliness rule;
+- does not classify `{operation}`; and
+- does not replace the full per-article management-comment parsing and validation performed later.
 
-`hold` articles may contain staged, unstaged, or untracked changes.
+For source state `active` or `erased`, the source article is a publish input and must be committed and clean.
 
-The authoring `/images` tree that will be synchronized to deploy must be committed and clean.
+Specifically:
 
-Dirty files outside managed article and image inputs are ignored.
+- the source path must be tracked in `HEAD`;
+- there must be no staged difference from `HEAD`; and
+- there must be no unstaged difference from the index.
 
-For these checks, clean means that no staged or unstaged difference exists relative to `HEAD`.
+If any of these conditions is not satisfied, conversion fails before publish planning or deploy-worktree modification.
+
+For source state `hold`:
+
+- the source path may be tracked or untracked;
+- staged differences are allowed; and
+- unstaged differences are allowed.
+
+A `hold` article is therefore not required to represent committed publish input.
+
+The authoring `/images` tree is authoritative for the deploy image mirror.
+
+Every file that would participate in the `/images` mirror must:
+
+- be tracked in `HEAD`;
+- have no staged difference from `HEAD`; and
+- have no unstaged difference from the index.
+
+Untracked or ignored files under authoring `/images` are not valid mirror inputs and cause conversion to fail rather than being copied to deploy.
+
+Dirty files outside managed article inputs and authoring `/images` are ignored.
+
+The converter performs these authoring-input checks once near the beginning of conversion.
+
+Concurrent converter execution and authoring-source modification while conversion is running are unsupported operations. The converter does not perform a second source-cleanliness check immediately before apply.
 
 ### Deploy worktree check
 
