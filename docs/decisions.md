@@ -311,6 +311,44 @@ The initialization workflow creates the empty ledger first and the config second
 
 Both files are Git-managed, and initial creation is committed with `[skip ci]`.
 
+## Defer scheduled publication from the Phase 0 MVP
+
+### Decision
+
+Do not support scheduled publication through a future Front Matter `published_at` in the Phase 0 MVP.
+
+For `CREATE` and `RECREATE`, a future `published_at` causes converter validation to fail before deployment.
+
+Past and current `published_at` values remain supported for establishing the initial publication date.
+
+Do not change the existing `pending_next_state` model merely to support scheduled publication.
+
+### Rationale
+
+The current `pending_next_state` model represents a deployed article candidate whose remote publication result can be observed and resolved.
+
+A scheduled article introduces a different state: deployment may already have completed even though the publication is intentionally not yet expected to appear as a normal remote publication.
+
+Using normal `pending_next_state` for that interval could keep the global deployment serialization active until the scheduled time, potentially blocking unrelated article publication for hours or days.
+
+The behavior of the non-public Zenn article API for a scheduled but not-yet-public article has also not yet been verified.
+
+Adding scheduled publication before that behavior is known would therefore require assumptions about remote observability and would broaden the pending-state model without evidence that the additional complexity is necessary.
+
+### Consequences
+
+The Phase 0 converter rejects future `published_at` values for `CREATE` and `RECREATE`.
+
+Existing `pending_next_state`, preflight, check, and terminal-result semantics remain unchanged.
+
+A future implementation may introduce a separate `future_publication_pending` representation and promote due candidates into normal `pending_next_state` only when the normal pending set is empty.
+
+That future design is not yet normative.
+
+Before scheduled publication is implemented, the article API behavior must be tested before and after the scheduled publication time.
+
+See [`architecture.md`](architecture.md#scheduled-publication).
+
 ## Keep the initial state checker one-shot
 
 ### Decision

@@ -499,6 +499,48 @@ Required Zenn Front Matter elements must be present.
 
 If source state is `active`, Front Matter must have `published: true`; otherwise conversion fails.
 
+#### `published_at`
+
+`published_at` is optional.
+
+When present, it must be parseable in one of the formats accepted by Zenn:
+
+- `YYYY-MM-DD`;
+- `YYYY-MM-DD HH:MM`.
+
+`published_at` is interpreted in JST.
+
+A date-only value (`YYYY-MM-DD`) is interpreted as `00:00 JST`.
+
+Comparison of `published_at` values uses their parsed semantic datetime values rather than their source-text representation.
+
+For `CREATE`:
+
+- absent -> OK;
+- past or current datetime -> OK and is treated as the initial publication date on Zenn;
+- future datetime -> `ERROR` in the Phase 0 MVP.
+
+For `RECREATE`, the same rules as `CREATE` apply because the operation creates a new Zenn publication.
+
+For `UPDATE`:
+
+- compare source `published_at` with the value in the released snapshot;
+- if both represent the same semantic value, validation succeeds;
+- adding, removing, or changing the value is an `ERROR`.
+
+The UPDATE restriction reflects that Zenn does not permit an already-established publication date to be changed.
+
+For an `active` article for which no publish operation was generated:
+
+- source `published_at` must have the same semantic value as the released snapshot;
+- otherwise conversion fails.
+
+For `DELETE`, `published_at` transition validation is not performed.
+
+For source state `hold`, `published_at` transition validation is not performed.
+
+Scheduled publication using a future `published_at` is not supported in the Phase 0 MVP. Its future design is described under Known limitations and backlog.
+
 ### Release and slug validation
 
 Release and slug validation is performed after `{operation}` has been classified.
@@ -1367,3 +1409,27 @@ A possible future enhancement is bounded repeated observation with intervals suc
 for a total of approximately 10 minutes, with interruption by `Ctrl+C`.
 
 This behavior is backlog and is not part of the initial version.
+
+### Scheduled publication
+
+Scheduled publication through a future `published_at` is not supported in the Phase 0 MVP.
+
+A future implementation should avoid overloading the existing `pending_next_state` semantics.
+
+The current design direction is to consider a separate `future_publication_pending` state for candidates that have been deployed but whose scheduled publication time has not yet arrived.
+
+The intended properties of that future design are:
+
+- `future_publication_pending` is separate from normal `pending_next_state`;
+- while an article is in future-pending state, another publish for the same `{article-id}` or `{slug}` is not allowed in the initial design;
+- other articles may still be published;
+- after the scheduled time has passed, `state checker check` may promote the candidate into `pending_next_state`;
+- promotion is performed by one atomic `ledger.json` replacement;
+- promotion occurs only when normal `pending_next_state` is empty;
+- if normal `pending_next_state` is not empty, promotion is deferred, the future-pending entry remains unchanged, and a later `check` retries the decision.
+
+Whether a scheduled publication should instead permit replacement of the still-unpublished candidate remains an open design question.
+
+Before this feature is specified for implementation, the Zenn article API must be tested before and after scheduled publication to determine how a reserved but not-yet-public article is represented remotely.
+
+The scheduled time becoming due means only that remote result observation may begin. It does not itself establish publication success.
