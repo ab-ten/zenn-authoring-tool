@@ -150,11 +150,55 @@ Exactly one latest successful `{article-artifact}` is retained for each `{articl
 
 `ledger.json` stores confirmed article state and unresolved publish candidates.
 
+It is created explicitly by `state checker init` before the repository enters the normal publish workflow.
+
+The canonical empty ledger is:
+
+```json
+{
+  "articles": {},
+  "pending_next_state": {}
+}
+```
+
+After initialization, `ledger.json` is updated by normal state transitions.
+
 Its logical structure is defined below.
 
-## `ledger.json` and released snapshot file update method
+#### `config.json`
 
-Management JSON and released snapshots MUST NOT be updated in place. The complete replacement content is written to a temporary file in the same directory and atomically replaces the destination.
+`config.json` stores repository-level Zenn account identity configuration.
+
+It is created by `state checker init` and is not modified by normal publish or state-transition processing after initialization.
+
+Its logical content includes:
+
+```json
+{
+  "zenn_user": {
+    "id": 12345,
+    "username": "example-user"
+  }
+}
+```
+
+`zenn_user.id` is the configured `{zenn-user-id}` and is the canonical value used for own-user publication checks.
+
+`zenn_user.username` records the username resolved during initialization for diagnostics and human-readable output. It is not used for owner identity comparison.
+
+## Management-file and released-snapshot update method
+
+Management JSON files and released snapshots MUST NOT be updated in place.
+
+The complete replacement content is written to a temporary file in the same directory and atomically replaces the destination.
+
+This rule applies to:
+
+- `ledger.json`;
+- `config.json` when it is created by `state checker init`; and
+- released snapshots.
+
+For normal operation after initialization, `config.json` is read-only from the tool's perspective.
 
 ## Authoring source representation
 
@@ -608,6 +652,138 @@ The state checker observes remote article state and reconciles local management 
 The initial implementation is one-shot. For each article that requires observation, it performs one Zenn API observation and exits. The user reruns `check` when another observation is needed.
 
 The state checker uses the Zenn article API through a small abstraction boundary so that API-specific behavior can be isolated if the API changes.
+
+### Configuration and owner identity
+
+The state checker reads repository account configuration from:
+
+`/_deploy/.zenn-authoring/config.json`
+
+The configured `zenn_user.id` is the repository's `{zenn-user-id}`.
+
+For an observed Zenn article:
+
+- `article.user.id == configured {zenn-user-id}` means an own-user publication;
+- a different `article.user.id` means another user's publication;
+- missing or invalid `article.user.id` is an `ERROR` and is treated as a possible API-schema change.
+
+The checker does not fall back to username comparison when numeric owner identity cannot be established.
+
+Any state-checker operation that performs remote publication observation loads `config.json` read-only before owner-sensitive interpretation.
+
+If:
+
+- `config.json` is missing;
+- the JSON cannot be parsed;
+- `zenn_user.id` is missing; or
+- `zenn_user.id` is not a valid numeric ID,
+
+the operation fails with `ERROR` and does not perform owner classification.
+
+When configuration is missing, the user is instructed to run:
+
+`state checker init <zenn-username>`
+
+
+### `init <zenn-username>`
+
+`init` establishes the repository's Zenn account identity and initial management state.
+
+It uses:
+
+`GET https://zenn.dev/api/users/<zenn-username>`
+
+to resolve the supplied username.
+
+The endpoint is used only by initialization. Normal preflight and check operations use the already configured numeric `{zenn-user-id}`.
+
+Before initialization proceeds, the deploy-worktree state is inspected.
+
+A clean deploy worktree is accepted normally.
+
+A dirty deploy worktree is accepted only when all of the following are true:
+
+- `config.json` does not exist;
+- the only init-produced management change is a canonical empty `ledger.json`; and
+- that state is recognized as an interrupted initial setup.
+
+Any other dirty deploy-worktree state causes `init` to fail without making further changes.
+
+#### Local management-state classification
+
+`init` classifies the existing `config.json` / `ledger.json` combination before modifying management state.
+
+If neither file exists:
+
+- perform normal first-time initialization.
+
+If `config.json` is absent and `ledger.json` exists:
+
+- invalid or unparsable ledger:
+  - return `ERROR`;
+  - do not overwrite it automatically.
+- canonical empty ledger:
+  - treat it as an interrupted initial setup;
+  - resolve the requested username again;
+  - continue by creating `config.json`.
+- ledger containing article or pending state:
+  - return `ERROR`;
+  - do not create configuration automatically;
+  - require inspection of repository state.
+
+If `config.json` exists but `ledger.json` does not:
+
+- return `ERROR`;
+- do not regenerate an empty ledger;
+- instruct the user to restore the ledger from Git.
+
+If `config.json` exists and `ledger.json` is invalid:
+
+- return `ERROR`;
+- do not overwrite the ledger;
+- instruct the user to restore it from Git.
+
+If both files exist and the ledger is valid:
+
+- invalid or unparsable config:
+  - return `ERROR`;
+  - do not overwrite it automatically;
+  - instruct the user to restore it from Git.
+- valid config:
+  - resolve the requested username;
+  - if its `{zenn-user-id}` equals the configured ID, report already initialized / no-op;
+  - if it differs, return `ERROR`;
+  - automatic account replacement is not supported in the MVP.
+
+#### Fresh initialization
+
+For a valid user lookup:
+
+1. obtain `user.id` as `{zenn-user-id}`;
+2. obtain `user.username` as diagnostic information;
+3. atomically create the canonical empty `ledger.json`;
+4. atomically create `config.json`;
+5. treat successful `config.json` creation as the initialization completion point.
+
+The ledger is deliberately created before the config.
+
+If processing stops after the empty ledger is created but before config creation, rerunning `init` can recognize and resume that interrupted initial setup.
+
+Once a valid config exists, a missing or damaged ledger is no longer interpreted as first-time initialization.
+
+#### Initialization completion
+
+`init` leaves its generated management-file changes in the deploy worktree.
+
+The state checker does not commit or push them.
+
+The user:
+
+1. reviews the deploy-worktree diff;
+2. commits the management files using `[skip ci]`;
+3. pushes the deploy branch.
+
+Normal publish workflows begin only after the deploy worktree is clean again.
 
 ### Result model
 
@@ -1081,9 +1257,13 @@ Management-only commits include `[skip ci]` so that Zenn deployment is skipped.
 
 Zenn CLI is used for local preview inside the container.
 
-### Zenn article API
+### Non-public Zenn APIs
 
-The state checker uses the non-public endpoint:
+The state checker depends on a small set of non-public Zenn endpoints.
+
+These interfaces are undocumented and may change, so API-dependent interpretation is isolated behind small functions.
+
+#### Article endpoint
 
 `https://zenn.dev/api/articles/{slug}`
 
@@ -1092,18 +1272,40 @@ The current design treats:
 - `404` as no publication for that slug;
 - `200` as a publication being present.
 
-The response is used to distinguish the user's own publication from another user's publication and to construct `{zenn-observation}`.
-
-Relevant response information currently includes:
+Relevant response information includes:
 
 - article `published_at`;
 - article `body_updated_at`;
 - article `source_repo_updated_at`;
-- user identity such as `id` and `username`.
+- article `user.id`; and
+- article `user.username`.
 
-The exact change behavior of the update-related metadata has not been fully verified and must be validated empirically.
+`user.id` is compared with the configured `{zenn-user-id}` to distinguish an own-user publication from another user's publication.
 
-API-dependent checks should be isolated behind small functions so that a future API change does not require broad changes to the state checker.
+`user.username` is diagnostic information and is not the canonical ownership criterion.
+
+The update behavior of observation-related metadata has not been fully verified and must be validated empirically.
+
+#### User endpoint
+
+`https://zenn.dev/api/users/{username}`
+
+This endpoint is used only by `state checker init`.
+
+For a valid user, the expected response provides user information including:
+
+- `id`;
+- `username`; and
+- `name`.
+
+Initialization stores:
+
+- `id` as `{zenn-user-id}`; and
+- `username` as diagnostic configuration.
+
+A missing user (`404`) or an invalid response causes initialization to fail without creating `config.json`.
+
+Normal state-checker operation does not repeatedly resolve the username through this endpoint.
 
 ## Supporting utilities
 

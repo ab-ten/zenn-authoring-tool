@@ -87,6 +87,25 @@ Once a publication has been created on Zenn, the `{slug}` associated with that p
 
 The current `{slug}` of a logical article may nevertheless change when an erased article is published again as a new Zenn publication. This is not treated as changing the slug of the old publication. It is a new association between the same `{article-id}` and a new publication.
 
+### `{zenn-user-id}`
+
+`{zenn-user-id}` identifies the Zenn user account that owns publications managed by this authoring repository.
+
+Its concrete value is the numeric `user.id` obtained from Zenn user information.
+
+`{zenn-user-id}` is the canonical identity used when determining whether a remotely observed publication belongs to the configured user.
+
+It is distinct from:
+
+- the Zenn username;
+- the Zenn display name;
+- `{article-id}`; and
+- `{slug}`.
+
+A username is used to resolve the account during repository initialization, but username equality is not used as the publication ownership criterion.
+
+A remote publication is an own-user publication when its observed `user.id` equals the configured `{zenn-user-id}`.
+
 ## Article lifecycle
 
 ### `{article-state}`

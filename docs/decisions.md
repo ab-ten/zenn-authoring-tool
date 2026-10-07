@@ -226,11 +226,13 @@ Image deployment failure has no fixed automatic recovery procedure; the user cor
 
 See [`architecture.md`](architecture.md#image-workflow).
 
-## Use the non-public Zenn article API behind a small abstraction
+## Use non-public Zenn APIs behind a small abstraction
 
 ### Decision
 
-Use the non-public Zenn article endpoint needed by the state checker for publication existence, ownership, collision, and observation checks.
+Use the non-public Zenn article endpoint for publication existence, ownership, collision, and observation checks.
+
+Use the non-public Zenn user endpoint only during repository initialization to resolve a supplied username to the numeric Zenn user ID.
 
 Keep API-dependent interpretation behind small, isolated functions.
 
@@ -239,23 +241,75 @@ Keep API-dependent interpretation behind small, isolated functions.
 The authoring tool needs to distinguish:
 
 - no publication for a slug;
-- the user's own publication;
+- the configured user's own publication;
 - another user's publication; and
 - changes to an existing remote publication.
 
-Without remote observation, several safety checks would have to depend on manual Dashboard inspection and could not be incorporated into preflight and state checking.
+A username is convenient user input during initial setup, but publication ownership requires a stable canonical comparison value.
 
-The interface is non-public and its exact behavior may change, so broad coupling to its response format would make maintenance unnecessarily expensive.
+The Zenn responses expose numeric `user.id`, so initialization resolves the username once and persists that numeric identity for later ownership checks.
+
+Repeated username lookup during normal operation would unnecessarily increase dependence on the non-public user endpoint.
+
+The interfaces are non-public and their exact behavior may change, so broad coupling to response formats would make maintenance unnecessarily expensive.
 
 ### Consequences
 
-The design accepts dependency on an undocumented and potentially changing interface.
+The design accepts dependency on undocumented and potentially changing Zenn interfaces.
 
-API-dependent behavior must be empirically verified, and changes should be isolated to the API interpretation layer where possible.
+The users endpoint is required only for `state checker init`.
 
-Background discussion considered by the design is recorded in `zenn-dev/zenn-community` issue `#209`.
+Normal ownership checks compare the article response `user.id` with the configured `{zenn-user-id}`.
 
-See [`architecture.md`](architecture.md#zenn-article-api).
+Username and display name are not used as canonical owner identity.
+
+API-dependent behavior must be empirically verified, and changes should remain isolated to the API interpretation layer.
+
+See [`architecture.md`](architecture.md#non-public-zenn-apis).
+
+## Persist repository owner identity separately from article state
+
+### Decision
+
+Store repository-level Zenn owner identity in `/.zenn-authoring/config.json`, separate from `ledger.json`.
+
+Create the configuration explicitly through `state checker init`.
+
+Store:
+
+- numeric `{zenn-user-id}` as the canonical owner identity; and
+- the resolved username only as diagnostic information.
+
+Do not modify `config.json` during normal article state transitions.
+
+Create the initial empty `ledger.json` during the same initialization workflow, but keep it as a separate file that remains mutable under normal state transitions.
+
+### Rationale
+
+Owner identity and article publication state have different lifecycles.
+
+The configured account identity is expected to remain stable after repository setup, while `ledger.json` changes whenever successful state or pending state changes.
+
+Keeping owner identity inside the frequently rewritten ledger would unnecessarily expose identity configuration to corruption or accidental replacement during normal state updates.
+
+A separate initialization-only configuration also makes accidental account switching explicit rather than allowing it to occur as a side effect of ledger mutation.
+
+### Consequences
+
+`config.json` and `ledger.json` have distinct roles:
+
+- `config.json` identifies which Zenn account this repository manages;
+- `ledger.json` records article successful and unresolved state.
+
+A valid config with a missing or damaged ledger is treated as recovery-required state, not as a fresh repository.
+
+The checker does not recreate an empty ledger automatically in that situation.
+
+Changing the configured Zenn account is not supported automatically in the MVP.
+
+The initialization workflow creates the empty ledger first and the config second so that an interruption before config creation can be recognized and safely resumed.
+
+Both files are Git-managed, and initial creation is committed with `[skip ci]`.
 
 ## Keep the initial state checker one-shot
 
