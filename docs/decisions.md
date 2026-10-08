@@ -132,7 +132,7 @@ See [`architecture.md`](architecture.md#execution-model).
 
 ### Decision
 
-Determine each article's `{operation}` once from source state, ledger confirmed state, and artifact comparison during converter planning.
+Determine each article's `{operation}` once from source state, ledger confirmed state, and comparison of candidate article content with the content of the released snapshot during converter planning.
 
 Later validation, preflight, and apply phases must not reclassify that operation.
 
@@ -196,6 +196,8 @@ Authoritative image edits occur in authoring `/images`.
 
 User interaction with generated deploy content is limited to diff review, Git history operations, and explicitly instructed recovery operations.
 
+Because direct editing of deploy artifacts is unsupported, the state checker does not perform a separate content-equality validation against Git HEAD. Operation-specific filesystem existence checks and commit-readiness validation remain in effect.
+
 See [`architecture.md`](architecture.md#deploy-worktree-invariants).
 
 ## Keep image lifecycle independent from article lifecycle
@@ -220,9 +222,13 @@ Image-only changes do not change article release or ledger state and do not crea
 
 Unused images are not automatically removed. Deletion is explicit through the authoritative authoring image tree.
 
-If article Markdown changes an image reference, that Markdown change follows normal article release rules.
+If an article Markdown image-reference path changes, `{article-content}` changes and the normal article release rules apply.
 
-Image deployment failure has no fixed automatic recovery procedure; the user corrects the authoritative inputs and retries the normal workflow.
+Image deployment failure has no fixed automatic recovery procedure.
+
+When the failure can be addressed by changing authoritative authoring inputs, the user may correct those inputs and rerun the normal publish workflow.
+
+Retry behavior after a transient Zenn-side image deployment failure with no remaining authoring/deploy image diff remains undefined pending Phase 0 validation.
 
 See [`architecture.md`](architecture.md#image-workflow).
 
@@ -325,7 +331,7 @@ Do not change the existing `pending_next_state` model merely to support schedule
 
 ### Rationale
 
-The current `pending_next_state` model represents a deployed article candidate whose remote publication result can be observed and resolved.
+The current `pending_next_state` model represents an article transition already applied to the deploy worktree whose remote result remains unresolved.
 
 A scheduled article introduces a different state: deployment may already have completed even though the publication is intentionally not yet expected to appear as a normal remote publication.
 
@@ -375,46 +381,55 @@ See [`architecture.md`](architecture.md#state-checker).
 
 ### Decision
 
-Represent unresolved article deployment candidates in `pending_next_state`.
+Store unresolved article transitions in `pending_next_state` after their changes have been applied to the deploy worktree.
 
-While any pending article exists, do not allow another deployable publish candidate to be applied or persisted.
+At converter entry, after worktree-state checks, fail with `ERROR` if any pending article transition exists.
 
-While any pending article exists, the converter fails before constructing new candidate artifacts, image mirror differences, or a publish plan.
+While pending state exists, do not begin:
 
-Preflight may defensively verify the same invariant, but the converter-entry guard is the primary serialization boundary.
+- candidate article content generation;
+- image validation;
+- image mirror-difference calculation; or
+- publish-plan generation.
 
-Image-only changes do not create pending article state.
+State-checker preflight retains its pending-state check as a defensive invariant check, not as the primary serialization boundary.
+
+Image-only changes do not create pending article transitions.
 
 ### Rationale
 
-Remote observations must be attributable to one known article candidate and, for UPDATE, to one known `{baseline-observation}`.
+A pending article transition represents a deploy-worktree change whose remote result has not yet been established as successful.
 
-Allowing a later deploy-triggering commit while an earlier article result is unresolved would make it unsafe to determine which deployment caused a remote change.
+Allowing another publish workflow to begin while an earlier article transition remains unresolved would make it unsafe to attribute remote changes to a particular deployment.
 
-The pending guard therefore serializes deployable article candidates without requiring the converter itself to become a concurrent transaction manager.
+For UPDATE, this is especially important because success classification relies on comparison with the fixed `{baseline-observation}` captured during preflight.
+
+Checking pending state at converter entry prevents the construction of new publish candidates while an earlier workflow remains unresolved.
+
+This is workflow-level serialization, not a concurrency lock. Concurrent converter executions remain unsupported.
 
 ### Consequences
 
-Pending article state must be resolved before another deploy-triggering workflow can begin.
+The converter must reject a new conversion whenever `pending_next_state` is non-empty, including conversions that would otherwise contain only image changes.
 
-The supported resolution paths are:
+Pending article transitions must be resolved through:
 
 - normal `SUCCESS`, which advances successful state and removes the pending entry;
-- `confirm-pending-update` for an eligible pending `UPDATE`, which confirms the same UPDATE SUCCESS result using explicit user verification;
-- `COLLISION`, which cleans up the failed candidate without advancing successful state and removes the pending entry; or
-- `discard-all-pendings`, which explicitly abandons the unresolved candidate set after the required safety checks.
+- `confirm-pending-update`, which confirms an eligible UPDATE using explicit user verification;
+- `COLLISION`, which removes the failed deploy artifact without advancing confirmed successful state; or
+- `discard-all-pendings`, which abandons all unresolved article transitions under the required safety conditions.
 
-`PENDING`, `UNKNOWN`, and `ERROR` from normal `check` retain the pending entry.
+`PENDING`, `UNKNOWN`, and `ERROR` retain the pending entry.
 
-Image-only changes do not create pending article state, but an unresolved article deployment still prevents starting another deploy-triggering workflow.
+Preflight cannot be used as an alternative path around the converter-entry guard.
 
-See [`architecture.md`](architecture.md#pending_next_state).
+See [`architecture.md`](architecture.md#pending-transition-guard).
 
 ## Recover interrupted terminal-result application by idempotent retry
 
 ### Decision
 
-Make terminal-result local application idempotent and recover interruption by rerunning the same terminal-result processing.
+Make terminal-result local application idempotent and recover interruption by retrying the same terminal-result processing.
 
 Do not introduce additional persistent intermediate states such as `applying` or `recovery`.
 
@@ -424,13 +439,19 @@ Update `ledger.json` and released snapshots by atomic replacement rather than in
 
 For `CREATE`, `UPDATE`, and `RECREATE` SUCCESS:
 
-1. atomically replace the released snapshot with the candidate artifact;
-2. treat an already-matching snapshot as a no-op;
-3. atomically replace `ledger.json` with the successful state changes and pending removal together.
+1. Confirm that the corresponding deploy artifact exists. If absent, return `ERROR` and retain the pending entry.
+2. Atomically replace the released snapshot with the content of the deploy artifact. If it already contains the same content, treat this step as a no-op.
+3. Atomically replace `ledger.json` with the successful-state changes and pending removal together.
 
-For `DELETE` SUCCESS, leave the released snapshot unchanged and atomically apply the ledger state change and pending removal together.
+For `DELETE` SUCCESS:
 
-For `COLLISION`, perform candidate cleanup first and then atomically remove the pending entry while leaving confirmed successful state unchanged.
+1. Confirm that the corresponding deploy artifact is absent. If present, return `ERROR` and retain the pending entry.
+2. Preserve the released snapshot.
+3. Atomically replace `ledger.json` with the confirmed-state change and pending removal together.
+
+For `COLLISION`, remove the failed deploy artifact before removing the pending entry. If the artifact is already absent, treat cleanup as a no-op.
+
+Preserve confirmed successful state and the released snapshot during COLLISION cleanup.
 
 ### Rationale
 
@@ -438,23 +459,29 @@ The existing pending entry already provides a durable indication that terminal p
 
 As long as the pending entry remains, `check` can observe the remote result again and retry the same local apply.
 
-Making each preceding local write idempotent allows interruption after a partial local update to be repaired without introducing another persistent transaction phase.
+Making snapshot replacement and collision cleanup idempotent allows interruption after a partial local update to be repaired without introducing another persistent transaction phase.
 
-Adding separate `applying` or `recovery` states would expand the persistent state machine and create additional intermediate states that would themselves require recovery rules.
+Adding separate `applying` or `recovery` states would expand the persistent state machine and create additional intermediate states requiring their own recovery rules.
 
 Atomic replacement prevents interruption during a management-file or snapshot write from leaving a partially written file.
 
+Deploy artifacts are tool-managed outputs. Direct user editing is unsupported, so the checker does not introduce a separate Git HEAD content-equality validation for terminal-result application.
+
 ### Consequences
 
-A local target that already contains the intended result is treated as a no-op during retry.
+A released snapshot already containing the target deploy artifact content is treated as a no-op during retry.
 
-Local content that matches neither the expected pre-apply state nor the target state is treated as an error rather than being overwritten blindly.
+A COLLISION cleanup whose target deploy artifact is already absent is also treated as a no-op.
+
+A missing deploy artifact required for CREATE, UPDATE, or RECREATE SUCCESS causes `ERROR` while preserving the pending entry.
+
+A remaining deploy artifact during DELETE SUCCESS also causes `ERROR` while preserving the pending entry.
 
 If processing stops after a released snapshot has been updated but before the ledger replacement commits, the pending entry remains and a later `check` retries the terminal apply.
 
 Once the ledger replacement removes `pending_next_state[{article-id}]`, that article is no longer a terminal-apply target on later checks.
 
-Recovery therefore depends on idempotent operations, atomic file replacement, and the existing pending commit point rather than on additional persistent transaction states.
+Recovery therefore depends on idempotent operations, operation-specific local existence checks, atomic file replacement, and the existing pending commit point.
 
 See [`architecture.md`](architecture.md#terminal-result-local-apply).
 
@@ -469,7 +496,7 @@ Allow manual confirmation only when:
 - the pending operation is `UPDATE`;
 - normal UPDATE result classification still returns `PENDING`;
 - the user has verified in the Zenn Dashboard that the target deployment completed successfully; and
-- the user has verified that the current remote content equals the candidate `{article-artifact}`.
+- the user has verified that the current remote article content equals the content of the corresponding deploy artifact.
 
 Treat successful manual confirmation as the same semantic `SUCCESS` as a normally observed UPDATE success.
 
@@ -479,9 +506,9 @@ Reuse the normal UPDATE SUCCESS terminal-result local apply rather than defining
 
 An UPDATE may legitimately deploy without producing an observable change that distinguishes the post-deploy `{zenn-observation}` from its `{baseline-observation}`.
 
-Keeping such a candidate permanently `PENDING` would make recovery impossible even when the user can independently verify both the deployment result and the resulting article content.
+Leaving such an UPDATE transition permanently `PENDING` would make recovery impossible even when the user can independently verify both the deployment result and the resulting article content.
 
-At the same time, automatically treating an unchanged observation as success would weaken the safety boundary because the checker could not prove that the candidate became effective.
+At the same time, automatically treating an unchanged observation as success would weaken the safety boundary because the checker has no evidence that the pending UPDATE was reflected remotely.
 
 Manual confirmation makes that uncertainty explicit and places the unverifiable content-equality decision at a deliberate user trust boundary.
 
@@ -544,7 +571,7 @@ An intentional Zenn-side edit contains two distinct concerns:
 - the remote content must be reconciled back into the authoritative authoring source; and
 - the remote drift that would normally block UPDATE preflight must be explicitly reviewed and authorized.
 
-Updating ledger successful state directly from the existing remote publication would bypass the normal release workflow and make successful state describe content that had not passed through the normal UPDATE candidate, pending, and confirmation process.
+Updating ledger successful state directly from the existing remote publication would bypass the normal release workflow and make successful state describe content that had not passed through candidate article content generation, deploy artifact materialization, the pending article transition, and successful-result confirmation.
 
 A one-shot observation authorization solves the narrower problem: it allows preflight to accept the specific remote state the user has reviewed without treating that authorization itself as successful publication state.
 
