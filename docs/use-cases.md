@@ -123,11 +123,11 @@ Start writing a new Zenn article using a human-readable authoring filename that 
 
 ### Initial state
 
-No managed source article exists yet.
+The authoring source for the new article does not yet exist.
 
 ### Flow
 
-1. Create a new Markdown file in the authoring worktree.
+1. Create a new Markdown source file under the authoring `/articles` tree. The file may be placed in a subdirectory and may use a human-readable filename independent of the Zenn slug.
 2. Put the Zenn Front Matter at the beginning of the file.
 3. Put the authoring-tool management comments immediately after the Front Matter.
 4. Assign an `{article-id}`.
@@ -171,6 +171,8 @@ Inspect how the current authoring worktree content is rendered by Zenn without p
 
 ### Initial state
 
+An authoring source article with a valid `{article-id}` exists.
+
 The article may be:
 
 - `hold`;
@@ -188,6 +190,8 @@ The article may be:
 
 - Preview does not modify the deploy worktree.
 - Preview displays the current source content directly.
+- An article without a declared `{slug}` can be previewed using a temporary preview-only slug.
+- Preview does not write that temporary slug back to the authoring source.
 - Authoring management HTML comments are not visibly rendered as article content.
 - Images under the authoring `/images` tree are available through the normal `/images/...` paths.
 - Preview does not change article state, release, ledger state, or released snapshots.
@@ -198,6 +202,8 @@ Preview may fail because of conditions such as:
 
 - a broken preview symlink; or
 - malformed Zenn Front Matter.
+
+An authoring Markdown file without `{article-id}` is not treated as an article for preview.
 
 ### End state
 
@@ -216,7 +222,7 @@ Publish a managed source article to Zenn for the first time and establish releas
 - The article is not yet published on Zenn.
 - No ledger entry exists for the `{article-id}`.
 - No released snapshot exists for the article.
-- No confirmed deploy article exists for the article.
+- No corresponding deploy artifact exists for the article.
 - The `{article-id}` must be unique among managed source articles.
 
 ### Publish preparation
@@ -246,10 +252,11 @@ The deploy worktree must be clean when the publish workflow begins.
 - The deploy article is named `<slug>.md`.
 - The deploy article does not contain authoring management comments.
 - The source filename and deploy filename remain independent.
-- A validation or preflight failure does not establish the candidate as a successful release.
+- Validation or preflight failure does not create a deploy artifact or pending article transition and does not establish a successful release.
 - The user can inspect the deploy diff before pushing it.
 - Successful `git push` alone does not make release `1` successful.
-- Failed or unresolved deployment does not advance the ledger or released snapshot.
+- Failed or unresolved deployment does not advance confirmed successful state or create a released snapshot.
+- While any pending article transition exists, the converter rejects a new publish workflow before candidate article content generation.
 - Release `1` is established as successful only after the article result is confirmed as `SUCCESS`.
 
 ### Failure and Guard Cases
@@ -269,16 +276,18 @@ Examples include:
 - slug collision; or
 - unresolved state-checker result.
 
-For a slug collision, the failed candidate can be cleaned up and a different candidate slug used in a later workflow.
+For a slug collision, the checker removes the failed deploy artifact and clears the pending entry without establishing a successful release. The user may then select a different slug and retry through a later publish workflow.
 
 ### End state on SUCCESS
 
 - source state is `active`;
 - source release is `1`;
-- deploy `/articles/<slug>.md` contains the release `1` artifact;
+- deploy `/articles/<slug>.md` exists as a deploy artifact containing the successful release `1` article content;
 - ledger successful release is `1`;
 - released snapshot is release `1`;
 - the Zenn publication exists under the selected slug.
+- ledger confirmed state is `active`, with the selected slug and a recorded successful Zenn observation;
+- the corresponding pending article transition has been removed.
 
 ## US-04 Revise a published article
 
@@ -312,12 +321,18 @@ Edit the source for a currently published article without immediately changing t
 - Multiple authoring commits may be made while the article is on hold.
 - Renaming the source file does not change article identity.
 - The successful remote publication remains release `N` until another publish workflow succeeds.
+- Editing the authoring source does not modify the deploy artifact, ledger confirmed state, or released snapshot.
+- Candidate article content is not generated merely by editing or previewing the source.
 
 ### Guard Cases
 
-Changing or removing the release number without entering an actual publish preparation is invalid.
+While the source is in `hold`, its release normally remains `N`.
 
-When the revised article is prepared for publication, US-05 defines the required release change.
+The source release may be changed to `N+1` in preparation for publication, provided that the eventual publish candidate article content differs from the content of released snapshot `N`.
+
+Removing the release number, setting it below `N`, or setting it above `N+1` is invalid.
+
+When the revised article is prepared for publication, US-05 defines the required release and content validation.
 
 ### End state
 
@@ -341,16 +356,16 @@ Publish revised source content as the next article release and advance the succe
 - A source article exists with identity `I`.
 - Source state is `hold`.
 - Slug is `S`.
-- Source release is `N`.
+- Source release is normally `N`, but may already be `N+1` when the release was set during revision preparation.
 - Ledger successful release is `N`.
 - Released snapshot `N` exists.
-- The artifact generated from the revised source differs from released snapshot `N`.
+- The authoring source contains revisions intended to change the successful `{article-content}` of release `N`. The converter verifies the content difference during publication preparation.
 - Zenn currently exposes release `N`.
 
 ### Publish preparation
 
 1. Change source state from `hold` to `active`.
-2. Change release from `N` to exactly `N+1`.
+2. Ensure source release is exactly `N+1`.
 3. Confirm `published: true`.
 4. Commit the source article.
 
@@ -366,34 +381,42 @@ The deploy worktree must be clean when the publish workflow begins.
 
 ### Acceptance Criteria
 
-- The candidate release is exactly `N+1`.
-- The candidate artifact differs from released snapshot `N`.
+- Source release is exactly `N+1` at the time of conversion.
+- Candidate article content differs from the content of released snapshot `N`.
 - Successful push alone does not advance the successful release.
-- Only `SUCCESS` advances the ledger successful release to `N+1`.
-- Only `SUCCESS` replaces the released snapshot with the candidate artifact.
-- A normal `check` result of `PENDING`, `COLLISION`, `UNKNOWN`, or `ERROR` by itself does not advance the confirmed successful state.
+- Only `SUCCESS`, including an eligible manually confirmed UPDATE success, advances the ledger successful release to `N+1`.
+- On `SUCCESS`, the released snapshot is atomically replaced with the content of the corresponding deploy artifact before the ledger transition is committed.
+- A normal `check` result of `PENDING`, `UNKNOWN`, or `ERROR` does not advance confirmed successful state.
 - Converter and state checker do not modify the authoring source.
 
 ### Guard Cases
 
-The workflow must reject inconsistent release or artifact combinations, including:
+The workflow rejects inconsistent source release and candidate article content combinations, including:
 
-- modified artifact with source release still equal to `N`;
-- source release greater than `N+1`;
-- source release lower than `N`;
-- release `N+1` while the candidate artifact still equals snapshot `N`;
-- `published` not equal to `true`;
-- dirty deploy worktree; or
-- inconsistent ledger or released snapshot.
+- candidate article content differs from released snapshot `N`, but source release remains `N`;
+- source release is greater than `N+1`;
+- source release is lower than `N`;
+- source release is `N+1`, but candidate article content equals the content of released snapshot `N`;
+- Front Matter `published` is not `true`;
+- the authoring source does not satisfy publish-input cleanliness requirements;
+- the deploy worktree is dirty;
+- pending article transitions already exist; or
+- ledger and released snapshot state are inconsistent.
+
+Preflight failure prevents publish-plan application.
+
+A pending UPDATE whose result remains `PENDING`, `UNKNOWN`, or `ERROR` retains the previous confirmed successful state.
 
 ### End state on SUCCESS
 
 - source state is `active`;
 - source release is `N+1`;
-- deploy `/articles/S.md` contains the `N+1` artifact;
+- deploy `/articles/S.md` exists as a deploy artifact containing successful release `N+1` article content;
 - ledger successful release is `N+1`;
-- released snapshot is `N+1`;
+- the released snapshot contains the same successful `{article-content}` as the deploy artifact for release `N+1`;
 - Zenn exposes the updated article under the same slug.
+- the pending UPDATE transition has been removed;
+- the ledger successful Zenn observation reflects the confirmed UPDATE result.
 
 ## US-06 Delete an article from Zenn
 
@@ -466,7 +489,8 @@ Examples include:
 - successful release and released snapshot remain `N`;
 - the successful Zenn observation retains the last value from before deletion;
 - deploy article `S` is absent;
-- the user's Zenn publication `S` is absent.
+- the user's Zenn publication `S` is absent;
+- the pending DELETE transition has been removed.
 
 ## US-07 Republish an erased article
 
@@ -481,7 +505,7 @@ Publish a previously erased managed article again while preserving its logical `
 - previous confirmed slug is `S_old`;
 - successful release is `N`;
 - released snapshot `N` exists;
-- no deploy article for `S_old` exists;
+- no deploy artifact exists at `deploy/articles/S_old.md`;
 - the user's publication at `S_old` no longer exists.
 
 ### Revision patterns
@@ -495,8 +519,8 @@ Two normal patterns are supported:
 
 - state is `active`;
 - `published: true`;
-- if the generated artifact equals snapshot `N`, release remains `N`;
-- if the artifact differs from snapshot `N`, release becomes `N+1`;
+- if candidate article content equals the content of released snapshot `N`, source release remains `N`;
+- if candidate article content differs from the content of released snapshot `N`, source release becomes `N+1`;
 - commit the source.
 
 ### Slug behavior
@@ -517,8 +541,8 @@ Two normal patterns are supported:
 - The same `{article-id}` is retained.
 - The old slug is reused when still available.
 - A new slug is accepted only when the previous slug has been taken by another user.
-- Unchanged artifact keeps release `N`.
-- Changed artifact uses release `N+1`.
+- Candidate article content equal to the content of released snapshot `N` requires source release `N`.
+- Candidate article content different from the content of released snapshot `N` requires source release `N+1`.
 - Push alone does not make the ledger active.
 - Ledger state becomes `active` only after `SUCCESS`.
 
@@ -526,8 +550,9 @@ Two normal patterns are supported:
 
 Examples include:
 
-- artifact changed while release remains `N`;
-- artifact unchanged while release is set to `N+1`; or
+- candidate article content differs from the content of released snapshot `N`, but source release remains `N`;
+- candidate article content equals the content of released snapshot `N`, but source release is set to `N+1`;
+- source release is lower than `N`; or
 - dirty deploy worktree.
 
 ### End state on SUCCESS
@@ -535,10 +560,12 @@ Examples include:
 - source state is `active`;
 - article identity remains `I`;
 - current slug is the successfully used slug;
-- successful release is `N` or `N+1` according to artifact equality;
+- successful release is the release recorded in the pending RECREATE transition (`N` or `N+1`), as validated during conversion;
 - deploy article exists under the current slug;
 - ledger state is `active`;
-- successful Zenn observation describes the republished own-user publication.
+- successful Zenn observation describes the republished own-user publication;
+- the released snapshot contains the successful content of the corresponding deploy artifact;
+- the pending RECREATE transition has been removed.
 
 ## US-08 Add or change images
 
@@ -584,7 +611,7 @@ Then:
 - Images referenced only by erased articles are not automatically removed.
 - Replacing image bytes at the same path does not increment article release.
 - Image-only changes do not change article ledger state or released snapshots.
-- Changing an image reference in article Markdown is an article-artifact change and follows the normal article release rules.
+- Changing an image-reference path in article Markdown changes `{article-content}` and follows the normal article release rules.
 - Any asset placed under authoring `/images` must be safe to synchronize to Zenn.
 - Private, secret, or otherwise non-deployable assets must not be stored there.
 - Conversion fails before deploy-worktree modification if any mirror input has an unsupported extension, exceeds the Phase 0 local size limit, is not a normal Git blob, or is a filesystem special file.
@@ -609,13 +636,17 @@ Invalid image entries, unsupported extensions, and oversized images cause conver
 
 Invalid Markdown reference paths and deletion of still-referenced images are not automatically detected by the Phase 0 converter. They are guarded by Zenn CLI preview and user review.
 
-No fixed automatic recovery is defined for Zenn-side image deployment errors. The user corrects the authoritative authoring inputs according to the failure and runs the normal workflow again.
+No fixed automatic recovery is defined for Zenn-side image deployment errors.
+
+When the failure can be addressed by changing authoritative authoring inputs, the user may correct those inputs and rerun the normal workflow.
+
+Retry behavior for a transient deployment failure with no remaining authoring/deploy image difference remains undefined pending Phase 0 validation.
 
 ### End state on SUCCESS
 
 - authoring `/images` contains the intended asset set;
 - deploy `/images` is synchronized to it;
-- article release changes only when the Markdown artifact changes;
+- article release changes only when `{article-content}` changes;
 - image-only changes leave article release, ledger, and released snapshots unchanged.
 - Zenn reflects the successfully deployed image additions, replacements, and deletions.
 
@@ -643,7 +674,7 @@ Article result confirmation and image deployment confirmation are separate.
 - the target deploy commit has been pushed;
 - Zenn deployment is running, queued, or has completed;
 - confirmed ledger state and released snapshots still represent the previous successful state;
-- article candidates, when present, are not yet successful;
+- pending article transitions, when present, have not yet been confirmed successful;
 - no separate unresolved deployment transaction should be introduced.
 
 ### Success model
@@ -671,16 +702,16 @@ Run state checker `check` as a one-shot operation.
 For each pending article, `check` determines one of the following semantic results:
 
 - `SUCCESS`: expected article state is confirmed and confirmed management state is advanced;
-- `PENDING`: previous successful state remains and the candidate stays unresolved;
-- `COLLISION`: the failed CREATE/RECREATE candidate is cleaned up without advancing confirmed management state;
-- `UNKNOWN` or `ERROR`: previous successful state remains and the candidate remains unresolved.
+- `PENDING`: previous successful state remains and the pending article transition stays unresolved;
+- `COLLISION`: the failed CREATE/RECREATE deploy artifact is cleaned up and the pending entry is removed without advancing confirmed management state;
+- `UNKNOWN` or `ERROR`: previous successful state remains and the pending article transition stays unresolved.
 
 If an article remains `PENDING`, normally wait as appropriate and run `check` again without triggering another deployment.
 
 For an eligible pending `UPDATE`, the user may instead use manual confirmation when both of the following have been verified:
 
 - the target deployment completed successfully in the Zenn Dashboard; and
-- the current remote content equals the candidate `{article-artifact}`.
+- the current remote article content equals the content of the corresponding deploy artifact.
 
 In that case, run `confirm-pending-update <article-id>` to establish the UPDATE as `SUCCESS`.
 
@@ -746,7 +777,7 @@ After replacing image content at the same path, the visible image may take some 
 **Article COLLISION**
 
 - confirmed ledger state and the released snapshot for that article remain unchanged;
-- the failed candidate cleanup is complete;
+- cleanup of the failed deploy artifact is complete;
 - the corresponding pending entry has been removed;
 - whether cleanup may be committed is determined by the overall commit-readiness result.
 
@@ -766,7 +797,9 @@ After replacing image content at the same path, the visible image may take some 
 
 ### Purpose
 
-Reconcile an intentional emergency edit made directly through the Zenn Web UI or another out-of-band mechanism when the normal authoring workflow was unavailable.
+Reconcile an intentional out-of-band change that has already become effective on Zenn while the normal authoring workflow was unavailable.
+
+The availability of a direct remote editing path during GitHub integration is not assumed and remains a Phase 0 validation task.
 
 The already-established remote change is not imported directly into confirmed ledger state. Instead, the authoring source is reconciled with the intended remote change and the change is confirmed as a new successful release through the normal `UPDATE` publish workflow.
 
@@ -796,14 +829,14 @@ Accepting remote drift must not advance confirmed successful state before the no
 3. Commit the reconciled authoring source and make the participating source clean.
 
 4. Run the normal publish workflow once without an observation override.
-   - The converter classifies the article as an `UPDATE` candidate.
+   - The converter classifies the article operation as `UPDATE` and generates temporary candidate article content.
    - UPDATE preflight observes the current remote publication.
    - Because the current remote observation differs from the ledger successful Zenn observation and no `{observation-override}` is present, preflight returns `ERROR` for remote drift.
    - The checker reports:
      - the ledger successful Zenn observation;
      - the current remote observation; and
      - the current observation in the JSON representation suitable for `#observation-override`.
-   - The candidate is not applied to the deploy worktree.
+   - Candidate article content is not materialized as a deploy artifact, and the deploy worktree remains unchanged.
    - No `pending_next_state` is created.
 
 5. Review the reported current remote observation.
@@ -815,8 +848,8 @@ Accepting remote drift must not advance confirmed successful state before the no
    - UPDATE preflight requires the current remote observation to exactly match `{observation-override}`.
    - If they match and the observation still differs from the ledger successful Zenn observation, preflight succeeds.
    - The current remote observation becomes the UPDATE `{baseline-observation}`.
-   - The candidate is deployed through the normal UPDATE workflow.
-   - `pending_next_state` records the UPDATE candidate and its `{baseline-observation}`.
+   - Candidate article content is materialized as a deploy artifact at `deploy/articles/<slug>.md`.
+   - `pending_next_state` records the pending UPDATE transition and its `{baseline-observation}`.
    - Review the deploy diff, commit the deploy branch, and push it normally.
 
 7. Run `state checker check`.
@@ -828,13 +861,13 @@ Accepting remote drift must not advance confirmed successful state before the no
    - normally, another one-shot `check` may be run later without starting a new deployment;
    - if manual confirmation is appropriate, the user must first verify:
      - that the target deployment completed successfully in the Zenn Dashboard; and
-     - that the current remote content equals the candidate `{article-artifact}`;
+     - that the current remote article content equals the content of the corresponding deploy artifact;
    - then run `state checker confirm-pending-update <article-id>`;
    - the pending UPDATE is confirmed using the same terminal-result local apply as normal UPDATE SUCCESS.
 
    If the result is `UNKNOWN` or `ERROR`:
    - do not advance successful state;
-   - retain the pending candidate; and
+   - retain the pending UPDATE transition; and
    - follow the normal recovery procedure.
 
 8. After release `N+1` has been confirmed successful:
@@ -861,7 +894,7 @@ Accepting remote drift must not advance confirmed successful state before the no
 - If normal `check` remains `PENDING`, `confirm-pending-update` may establish SUCCESS only after the user has verified both deployment completion and remote-content equality.
 - On successful confirmation:
   - ledger successful release becomes `N+1`;
-  - released snapshot becomes the candidate `{article-artifact}`;
+  - the released snapshot is atomically replaced with the content of the corresponding deploy artifact;
   - successful Zenn observation becomes the current remote observation used when SUCCESS is confirmed;
   - the article is removed from `pending_next_state`.
 - `{article-id}` and `{slug}` are preserved.
@@ -876,7 +909,7 @@ Accepting remote drift must not advance confirmed successful state before the no
 
 Suppose release `5` is the confirmed successful release and the authoring tool is temporarily unavailable.
 
-1. Correct the typo through the Zenn Web UI.
+1. An intentional typo correction becomes effective on Zenn through a separately verified out-of-band editing path.
 2. After the authoring environment is available again, inspect the current Zenn article and apply the intended correction to the authoring source.
 3. Change source release to `6` and commit it.
 4. Run the normal publish workflow.
@@ -884,10 +917,10 @@ Suppose release `5` is the confirmed successful release and the authoring tool i
 6. Confirm that the reported observation represents the emergency edit.
 7. Add that observation as `{observation-override}` and commit the source.
 8. Run the normal publish workflow again.
-9. The UPDATE candidate is deployed and recorded as pending.
+9. The converter materializes candidate article content as a deploy artifact and records a pending UPDATE transition.
 10. Run `check`.
     - If it returns `SUCCESS`, release `6` is confirmed normally.
-    - If it remains `PENDING`, verify successful deployment in the Zenn Dashboard and verify that remote content equals the candidate artifact, then use `confirm-pending-update`.
+    - If it remains `PENDING`, verify successful deployment in the Zenn Dashboard and verify that remote article content equals the content of the deploy artifact, then use `confirm-pending-update`.
 11. Remove `{observation-override}` from the source and commit the cleanup.
 12. Confirm `COMMIT_READY` with `check`.
 13. Commit and push the management changes with `[skip ci]`.
@@ -925,7 +958,7 @@ The workflow must not proceed when, for example:
 - an unexpected remote change is discovered while reviewing the observation;
 - an old `{observation-override}` remains after its successful release has already been confirmed;
 - an UPDATE remains `PENDING` but the user cannot confirm successful completion of the target deployment in the Zenn Dashboard; or
-- an UPDATE remains `PENDING` but the user cannot confirm that current remote content equals the candidate `{article-artifact}`.
+- an UPDATE remains `PENDING` but the user cannot confirm that current remote article content equals the content of the corresponding deploy artifact.
 
 If the remote observation changes after `{observation-override}` is created, preflight fails rather than authorizing the newer remote state.
 
@@ -950,7 +983,7 @@ If practical validation reveals gaps, the reconciliation procedure should be rev
 - the authoring source is semantically aligned with the intended Zenn-side emergency change;
 - source release and ledger successful release are both `N+1`;
 - no `{observation-override}` remains in the source;
-- released snapshot equals the release `N+1` candidate `{article-artifact}`;
+- the released snapshot contains the successful release `N+1` content copied from the deploy artifact;
 - successful Zenn observation is the current remote observation from successful release confirmation;
 - deploy `/articles/<slug>.md` equals the released snapshot;
 - `pending_next_state` is empty;
