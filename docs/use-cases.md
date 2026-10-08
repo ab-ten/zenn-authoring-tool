@@ -255,7 +255,8 @@ The deploy worktree must be clean when the publish workflow begins.
 - Validation or preflight failure does not create a deploy artifact or pending article transition and does not establish a successful release.
 - The user can inspect the deploy diff before pushing it.
 - Successful `git push` alone does not make release `1` successful.
-- Failed or unresolved deployment does not advance confirmed successful state or create a released snapshot.
+- A validation failure, preflight failure, or non-terminal `check` result does not by itself establish a successful release or advance confirmed ledger state.
+- A released snapshot is created only during SUCCESS terminal-result application. If that application is interrupted after snapshot replacement but before ledger commit, the snapshot may already exist while the pending transition remains unresolved.
 - While any pending article transition exists, the converter rejects a new publish workflow before candidate article content generation.
 - Release `1` is established as successful only after the article result is confirmed as `SUCCESS`.
 
@@ -770,7 +771,8 @@ After replacing image content at the same path, the visible image may take some 
 
 **Article PENDING / UNKNOWN / ERROR**
 
-- the previous successful ledger state and released snapshot for each unresolved article remain unchanged;
+- a non-terminal result does not itself update confirmed successful ledger state or released snapshots;
+- if an earlier SUCCESS terminal-result application was interrupted after snapshot replacement but before ledger commit, the released snapshot may already contain pending release content; recovery follows the idempotent terminal-result application rules in `architecture.md`;
 - the corresponding pending entry remains;
 - no new deployment is started while unresolved article state remains.
 
@@ -884,7 +886,7 @@ Accepting remote drift must not advance confirmed successful state before the no
 
 ### Acceptance Criteria
 
-- An intentional Zenn Web UI or other out-of-band edit can be brought back under authoring management.
+- An intentional out-of-band remote content change can be reconciled through this workflow when a valid editing path exists and its effects can be verified.
 - The remote change is confirmed as a new successful release through the normal `UPDATE` publish workflow.
 - Accepting remote drift through `{observation-override}` alone does not change confirmed successful ledger state.
 - `{observation-override}` authorizes only the specific remote observation explicitly reviewed by the user.

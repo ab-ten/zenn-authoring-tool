@@ -158,9 +158,19 @@ Exactly one latest successful released snapshot is retained for each ledger-mana
 
 ### Released snapshot invariant
 
-For every ledger-managed article with successful release `N`, exactly one released snapshot exists and contains the `{article-content}` of successful release `N`.
+For a ledger-managed article whose terminal-result local application has completed, exactly one released snapshot exists and contains the `{article-content}` of the ledger's successful release `N`.
 
-This invariant applies whether the ledger confirmed state is `active` or `erased`.
+This invariant applies to both `active` and `erased` confirmed states.
+
+During an interrupted `CREATE`, `UPDATE`, or `RECREATE` SUCCESS application, the released snapshot may already contain the pending release content while the ledger still records the previous confirmed successful state (or no confirmed article for CREATE).
+
+This is a recoverable intermediate state, not a completed successful-state transition. The pending entry remains until ledger atomic replacement commits the result.
+
+A later `check` re-observes the pending article. If the remote result can be classified as `SUCCESS` again, the checker retries the idempotent terminal-result application and completes the ledger commit.
+
+If the result remains `PENDING`, `UNKNOWN`, or `ERROR`, the pending transition is retained and the successful-state commit does not complete.
+
+Once the pending transition is removed by successful terminal-result application, the released snapshot and confirmed ledger release must be consistent again.
 
 A successful `DELETE`:
 

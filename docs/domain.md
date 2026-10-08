@@ -46,7 +46,11 @@ It is the local article file used when the state checker needs the article conte
 
 A released snapshot is the file stored at `/.zenn-authoring/released/<article-id>.md`.
 
-It contains the latest successful `{article-content}` for the logical article.
+In a completed successful-state transition, it contains the latest confirmed successful `{article-content}` for the logical article.
+
+During interrupted SUCCESS terminal-result application, the released snapshot may temporarily contain pending release content before the corresponding ledger transition has committed.
+
+The pending article transition remains the recovery boundary until successful-state commit completes.
 
 ### remote article content
 
