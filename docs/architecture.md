@@ -109,7 +109,7 @@ The converter requires the entire deploy worktree to be clean before beginning a
 
 `/articles` contains the Markdown artifacts deployed to Zenn.
 
-An active or candidate publication is represented as:
+A local article prepared for deployment or maintained as an active publication is represented by a deploy artifact at:
 
 `/articles/<slug>.md`
 
@@ -142,7 +142,9 @@ The `3_000_000`-byte limit is a conservative local interpretation of Zenn's docu
 
 #### `released/`
 
-`released/` stores the latest successfully released article artifact for managed articles.
+`released/` stores released snapshots for managed articles.
+
+Each released snapshot is a filesystem file containing the latest successful `{article-content}` for one `{article-id}`.
 
 Released snapshots are retained for erased articles.
 
@@ -152,11 +154,11 @@ Each released snapshot is stored as:
 
 `normalized-article-id` is the lowercase hex-and-dash UUID representation of `{article-id}`.
 
-Exactly one latest successful `{article-artifact}` is retained for each `{article-id}`.
+Exactly one latest successful released snapshot is retained for each ledger-managed `{article-id}`.
 
 ### Released snapshot invariant
 
-For every ledger-managed article with successful release `N`, exactly one released snapshot exists and represents the `{article-artifact}` of successful release `N`.
+For every ledger-managed article with successful release `N`, exactly one released snapshot exists and contains the `{article-content}` of successful release `N`.
 
 This invariant applies whether the ledger confirmed state is `active` or `erased`.
 
@@ -164,20 +166,22 @@ A successful `DELETE`:
 
 - does not create a new `{release-number}`;
 - does not modify the released snapshot; and
-- leaves the snapshot representing the last successfully published `{article-artifact}` from before deletion.
+- leaves the snapshot containing the latest successful `{article-content}` from before deletion.
 
-Therefore, for an `erased` article, the retained released snapshot remains the artifact baseline for a later `RECREATE`.
+For an `erased` article, the retained released snapshot remains the content comparison baseline for a later `RECREATE`.
 
 When `RECREATE` is classified:
 
-- if the candidate `{article-artifact}` equals the retained released snapshot for successful release `N`, the candidate uses release `N`;
-- if it differs, the candidate uses release `N+1`.
+- if candidate article content equals the content of the retained released snapshot for successful release `N`, source `#release` must remain `N`;
+- if it differs, source `#release` must be `N+1`.
 
-On successful `RECREATE`, the released snapshot is atomically replaced with the candidate `{article-artifact}`. If it already equals the candidate artifact, the replacement is an idempotent no-op.
+On successful `RECREATE`, the released snapshot is atomically replaced with the content of the corresponding deploy artifact.
+
+If the released snapshot already contains the same content, replacement is an idempotent no-op.
 
 #### `ledger.json`
 
-`ledger.json` stores confirmed article state and unresolved publish candidates.
+`ledger.json` stores confirmed article state and unresolved article transitions.
 
 It is created explicitly by `state checker init` before the repository enters the normal publish workflow.
 
@@ -251,13 +255,13 @@ The supported management comments are:
 
 The source `#state` declares the next intended `{article-state}`.
 
-For an operation that publishes an `{article-artifact}`, source `#release` is treated as the candidate `{release-number}`.
+For an operation that publishes `{article-content}`, source `#release` declares the `{release-number}` associated with the candidate article content.
 
 `#observation-override` is optional and may appear zero or one time. Its JSON value is the concrete representation of one `{zenn-observation}`. Multiple observation-override comments are invalid.
 
 The converter parses consecutive management comments immediately following the Front Matter.
 
-When an article artifact is generated, all authoring-tool management comments are removed. The Zenn Front Matter and article body are otherwise preserved according to the normal rendering rules.
+When candidate article content is generated, all authoring-tool management comments are removed. The Zenn Front Matter and article body are otherwise preserved according to the normal rendering rules.
 
 Management comment representation does not itself perform validation or transition classification. Those responsibilities belong to the converter and state checker.
 
@@ -286,8 +290,9 @@ For each managed article it stores:
 - `slug`: the currently confirmed `{slug}`;
 - `state`: the confirmed `{article-state}`, either `active` or `erased`;
 - `successful release`: the latest `{release-number}` whose Zenn result has been confirmed successful;
-- `successful Zenn observation`: the remote observation associated with the last confirmed successful own-user publication; and
-- the released snapshot stored under `/.zenn-authoring/released/`.
+- `successful Zenn observation`: the remote observation associated with the last confirmed successful own-user publication.
+
+The corresponding released snapshot is stored separately under `/.zenn-authoring/released/` and is not embedded in `ledger.json`.
 
 The concrete successful Zenn observation contains:
 
@@ -303,18 +308,20 @@ Observations of other users' publications are not stored as the article's succes
 
 ### `pending_next_state`
 
-`pending_next_state` records publish candidates whose remote result has not yet been confirmed.
+`pending_next_state` stores unresolved article transitions whose publish results have not yet been confirmed.
 
-The existence of any pending article prevents a new deployable publish candidate from being authorized or applied.
+Each pending article transition represents a change already applied to the deploy worktree by conversion, but not yet established as a confirmed successful state.
 
-Temporary in-memory candidate artifacts and publish-plan entries may still be constructed. Preflight enforces the pending guard before any publish plan is applied to the deploy worktree.
+A pending article transition is not a persistent candidate article content object or the Zenn-side deploy status itself.
+
+If any pending article transition exists, the converter returns `ERROR` at its entry guard before candidate article content generation, image validation, image mirror-difference calculation, or publish-plan generation.
 
 Each pending entry is keyed by `{article-id}` and stores:
 
-- `operation`: the candidate `{operation}`;
-- `slug`: the candidate `{slug}`;
-- `state`: the candidate target `{article-state}`;
-- `release`: the candidate `{release-number}`; and
+- `operation`: the pending transition's `{operation}`;
+- `slug`: the pending transition's `{slug}`;
+- `state`: the target `{article-state}`;
+- `release`: the pending transition's `{release-number}`; and
 - `baseline observation`: only for `UPDATE`.
 
 The target state is:
@@ -326,13 +333,11 @@ An `UPDATE` pending entry stores the `{baseline-observation}` returned by succes
 
 `CREATE`, `DELETE`, and `RECREATE` do not store a baseline observation.
 
-`pending_next_state` is not the Zenn deploy status itself. It records the local unresolved publish transaction that must be reconciled with the remote state.
-
 Pending entries are resolved only by:
 
-- successful result confirmation;
+- `SUCCESS`;
 - `confirm-pending-update` for an eligible pending `UPDATE`;
-- collision cleanup; or
+- `COLLISION` cleanup; or
 - `discard-all-pendings`.
 
 ## Preview environment
@@ -403,6 +408,23 @@ Unexpected partial results or abnormal termination are detected and recovered th
 
 - the deploy worktree's dirty state; and
 - user review of `git diff`.
+
+### Pending transition guard
+
+At converter entry, after worktree-state checks and before per-article candidate article content generation, the converter checks `pending_next_state`.
+
+If any pending article transition exists, conversion fails with `ERROR`.
+
+In this case, the converter does not begin:
+
+- candidate article content generation;
+- image validation;
+- image mirror-difference calculation; or
+- publish-plan generation.
+
+This is the primary serialization boundary for publish workflows.
+
+State-checker preflight retains its pending-state check as a defensive invariant check, not as the primary serialization mechanism.
 
 ### Git state inspection
 
@@ -483,7 +505,7 @@ For each managed source, the converter performs the required work including:
 - validating `{article-id}`;
 - validating `{slug}`;
 - classifying article state and `{operation}`;
-- generating the candidate `{article-artifact}` when needed; and
+- generating candidate article content when needed; and
 - creating a per-article publish-plan entry.
 
 ### Article ID handling
@@ -517,8 +539,8 @@ If there is no ledger confirmed state:
 
 If ledger confirmed state is `active`:
 
-- source `active` with candidate `{article-artifact}` different from the released snapshot -> `UPDATE`;
-- source `active` with candidate `{article-artifact}` equal to the released snapshot -> no article operation;
+- source `active` with candidate article content different from the content of the released snapshot -> `UPDATE`;
+- source `active` with candidate article content equal to the content of the released snapshot -> no article operation;
 - source `erased` -> `DELETE`.
 
 If ledger confirmed state is `erased`:
@@ -589,16 +611,16 @@ For `CREATE`:
 - source `#release` must be `1`;
 - otherwise conversion fails.
 
-For an article whose ledger successful release is `N`, `UPDATE` / `RECREATE` validation uses candidate-artifact equality:
+For an article whose ledger successful release is `N`, `UPDATE` / `RECREATE` validation compares candidate article content with the content of released snapshot `N`:
 
-- if candidate `{article-artifact}` equals released snapshot `N`, source `#release` must be `N`;
-- if candidate `{article-artifact}` differs from released snapshot `N`, source `#release` must be exactly `N+1`;
+- if they are equal, source `#release` must be `N`;
+- if they differ, source `#release` must be exactly `N+1`;
 - otherwise conversion fails.
 
 For `DELETE`:
 
 - source `#release` must equal ledger successful release `N`;
-- `{article-artifact}` differences are not used for DELETE release validation;
+- differences in candidate article content are not used for DELETE release validation;
 - otherwise conversion fails.
 
 For source state `hold`, release transition validation is not performed.
@@ -606,13 +628,13 @@ For source state `hold`, release transition validation is not performed.
 For an `active` article for which no publish operation was generated:
 
 - ledger confirmed state is `active`;
-- candidate `{article-artifact}` equals the released snapshot for successful release `N`;
+- candidate article content equals the content of the released snapshot for successful release `N`;
 - source `#release` must remain `N`;
 - otherwise conversion fails.
 
 #### Slug validation
 
-Every publish candidate must have a `{slug}`.
+Every article operation in the publish plan must have a `{slug}`.
 
 The `{slug}` must satisfy the domain constraints for allowed characters and length.
 
@@ -647,15 +669,19 @@ For an `active` article for which no publish operation was generated:
 - source `{slug}` must equal ledger confirmed `{slug}`;
 - otherwise conversion fails.
 
-### Candidate artifact generation
+### Candidate article content generation
 
-Candidate generation takes the authoring Markdown as input.
+Candidate article content is generated from the authoring source Markdown.
 
-It removes only the authoring-tool management HTML comments.
+Generation removes only the authoring-tool management HTML comments.
 
-Zenn Front Matter and article body are otherwise preserved by the normal renderer.
+The Zenn Front Matter and article body are otherwise preserved by the normal renderer.
 
-Candidate generation itself does not write the artifact into the deploy worktree.
+The generated candidate article content is a temporary storage-independent value retained inside the converter until publish-plan application.
+
+Generation itself does not create or modify a deploy artifact.
+
+After materialization into the deploy worktree, candidate article content is not retained as persistent state.
 
 ### Article global checks
 
@@ -665,7 +691,7 @@ Conversion fails if:
 
 - normalized `{article-id}` is duplicated among sources;
 - a ledger-managed `{article-id}` has no corresponding source;
-- candidate `{slug}` values are duplicated among publish candidates.
+- the `{slug}` values used by article operations are duplicated
 
 The source filename is not part of identity matching.
 
@@ -709,7 +735,7 @@ Each article entry is constructed from:
 - source information;
 - ledger information;
 - validation results;
-- the candidate `{article-artifact}` when required; and
+- candidate article content for `CREATE`, `UPDATE`, and `RECREATE`; and
 - the `{operation}` selected by the state check.
 
 Publish eligibility and `{operation}` are decided exactly once in this phase.
@@ -732,13 +758,9 @@ The converter invokes state-checker `preflight` with the finalized publish plan.
 
 If preflight does not return `OK`, the converter does not apply the plan.
 
-For `UPDATE`, successful preflight returns a `{baseline-observation}` that is retained for the pending candidate.
+For `UPDATE`, successful preflight returns a `{baseline-observation}` that is retained in the pending UPDATE transition.
 
-Temporary candidate artifacts and publish-plan entries may be constructed while unresolved pending state exists.
-
-These are in-memory planning data only and do not become a deployable candidate unless preflight succeeds.
-
-`preflight` enforces the pending guard before any publish plan is applied to the deploy worktree.
+`preflight` checks `pending_next_state` as a defensive invariant check. The primary pending guard has already been enforced at converter entry.
 
 ### Publish-plan application
 
@@ -746,9 +768,11 @@ The converter applies only the same plan that passed preflight.
 
 The operation is not reclassified during apply.
 
-For `CREATE`, `UPDATE`, and `RECREATE`, the plan's candidate `{article-artifact}` is written to:
+For `CREATE`, `UPDATE`, and `RECREATE`, the plan's candidate article content is materialized as a deploy artifact at:
 
-`deploy /articles/<candidate-slug>.md`
+`deploy /articles/<plan-slug>.md`
+
+After materialization, the file is treated as a deploy artifact rather than as persistent candidate article content.
 
 For `DELETE`:
 
@@ -1081,51 +1105,66 @@ If processing is interrupted while the pending entry still exists, a later `chec
 
 A local write that already equals its target content is treated as a no-op.
 
-Local content that is neither the expected pre-apply state nor the target state is an error.
-
 Once the pending entry has been removed, that article is no longer a terminal-apply target on later checks.
 
 ### Applying `SUCCESS`
 
 For `CREATE`, `UPDATE`, and `RECREATE` success, apply the following steps in order:
 
-1. Obtain the candidate `{article-artifact}` from `deploy/articles/<candidate-slug>.md`.
-2. Atomically replace the released snapshot with the candidate `{article-artifact}`. If the snapshot already equals the candidate artifact, treat this step as a no-op and continue.
-3. Atomically replace the ledger, applying all of the following changes together:
-   - create or finalize `articles[{article-id}]` for `CREATE`;
-   - confirmed state = `active`;
-   - slug = candidate `{slug}` for `CREATE` and `RECREATE`; retain the confirmed slug for `UPDATE`;
-   - successful release = candidate `{release-number}`;
-   - successful Zenn observation = current observation of the user's own publication;
-   - remove `pending_next_state[{article-id}]` (the article-level commit point).
+1. Confirm that `deploy/articles/<pending.slug>.md` exists.
+   If it does not exist, return `ERROR` and retain the pending entry.
+2. Atomically replace the released snapshot with the content of the deploy artifact.
+   If the released snapshot already contains the same content, treat this step as a no-op.
+3. Atomically replace the ledger, applying the corresponding successful-state changes and removing `pending_next_state[{article-id}]` together.
+
+The ledger replacement applies the following changes:
+
+- `CREATE`:
+  - create `articles[{article-id}]`;
+  - confirmed state = `active`;
+  - confirmed slug = pending `{slug}`;
+- `UPDATE`:
+  - retain confirmed state = `active`;
+  - retain the existing confirmed slug;
+- `RECREATE`:
+  - confirmed state = `active`;
+  - confirmed slug = pending `{slug}`.
+
+For all three operations:
+
+- successful release = pending `{release-number}`;
+- successful Zenn observation = current `{zenn-observation}` of the user's own publication;
+- remove `pending_next_state[{article-id}]` (the article-level commit point).
 
 The pending entry remains until snapshot replacement has completed and the ledger atomic replacement commits the article result.
 
-For `DELETE` success, do not modify the released snapshot. Atomically replace the ledger, applying all of the following changes together:
+For `DELETE` success:
 
-- confirmed state = `erased`;
-- retain the existing slug;
-- retain successful release;
-- retain released snapshot;
-- retain successful Zenn observation;
-- remove `pending_next_state[{article-id}]` (the article-level commit point).
+1. Confirm that `deploy/articles/<confirmed-slug>.md` does not exist.
+   If it exists, return `ERROR` and retain the pending entry.
+2. Do not modify the released snapshot.
+3. Atomically replace the ledger, applying all of the following changes together:
+   - confirmed state = `erased`;
+   - retain the existing confirmed slug;
+   - retain successful release;
+   - retain successful Zenn observation;
+   - remove `pending_next_state[{article-id}]` (the article-level commit point).
 
 ### Applying `COLLISION`
 
-`COLLISION` applies to `CREATE` and `RECREATE`.
+`COLLISION` applies only to `CREATE` and `RECREATE`.
 
-The confirmed successful article state is not changed.
+The checker performs the following steps:
 
-The checker applies the following steps in order:
+1. Remove the deploy artifact at `deploy/articles/<pending.slug>.md`.
+   If the artifact is already absent, treat cleanup as an idempotent no-op.
+2. Atomically replace the ledger, preserving confirmed successful state and removing the pending entry.
 
-1. Read the candidate slug from `pending_next_state` and remove `deploy/articles/<candidate-slug>.md`. If the candidate deploy artifact is already absent, treat cleanup as a no-op and continue. Unexpected artifact content is an error under the terminal-result local apply rules.
-2. Atomically replace the ledger, leaving confirmed successful article state unchanged and removing `pending_next_state[{article-id}]` together (the article-level commit point).
+The released snapshot is not modified.
 
-The pending entry remains until candidate deploy artifact cleanup has completed and the ledger atomic replacement commits the collision result.
+The source is not modified.
 
-The checker leaves the source unchanged, leaves cleanup changes dirty in the deploy worktree, and instructs the user to review, commit, and push the cleanup using `[skip ci]`.
-
-The user then changes source `#slug` to another candidate and starts a later publish workflow.
+The checker leaves the cleanup changes in the deploy worktree and instructs the user to review, commit, and push them using `[skip ci]`.
 
 ### `PENDING`, `UNKNOWN`, and `ERROR`
 
@@ -1208,12 +1247,12 @@ If the result is:
 - `SUCCESS`: manual confirmation is unnecessary; the command returns an error and instructs the user to use normal `check`;
 - `UNKNOWN` or `ERROR`: manual confirmation is prohibited.
 
-Manual confirmation uses the user as a trust boundary. Before confirming, the user must have verified:
+Before manual confirmation, the user must have verified:
 
-- in the Zenn Dashboard, that the target deployment completed successfully; and
-- that the current remote content equals the candidate `{article-artifact}`.
+- that the target deployment completed successfully in the Zenn Dashboard; and
+- that the remote article content equals the content of the corresponding deploy artifact.
 
-The state checker does not independently verify remote content equality.
+The checker does not independently verify remote content equality.
 
 After confirmation, the pending UPDATE is treated as `SUCCESS`.
 
@@ -1225,22 +1264,22 @@ If interrupted while the pending entry still exists, the command may be safely r
 
 ### `discard-all-pendings`
 
-`discard-all-pendings` prepares unresolved candidates for explicit user-driven rollback when `ERROR`, `UNKNOWN`, or another unresolved condition cannot be automatically finalized.
+`discard-all-pendings` prepares unresolved article transitions for explicit user-driven rollback when `ERROR`, `UNKNOWN`, or another unresolved condition cannot be automatically finalized.
 
 It requires:
 
 - at least one pending article;
-- the user has decided to discard all candidates after checking remote state;
-- no later deploy commit exists while the candidates are pending;
-- `HEAD` is the deploy commit containing the pending candidates.
+- the user has decided to discard all pending transitions after checking remote state;
+- no later deploy commit exists after the commit that introduced the pending transitions;
+- `HEAD` is the deploy commit that introduced the pending transitions and their corresponding deploy changes.
 
 #### Remote discard safety
 
-Before discard, the user must confirm using Zenn Dashboard or equivalent evidence that the target deploy can no longer apply the candidates later.
+Before discard, the user must confirm using Zenn Dashboard or equivalent evidence that the target deploy can no longer apply the pending transitions later.
 
 A current remote observation alone is not sufficient evidence that the deploy is terminal.
 
-If it cannot be established whether a candidate may still be applied later:
+If it cannot be established whether a pending transition may still be applied later:
 
 - discard is not performed;
 - pending state is retained;
@@ -1248,18 +1287,28 @@ If it cannot be established whether a candidate may still be applied later:
 
 Remote consistency expectations are operation-specific:
 
-- `CREATE`: the candidate has not become the user's own publication;
+- `CREATE`: the pending publication has not become the user's own publication;
 - `UPDATE`: current observation remains consistent with baseline / previous successful state;
 - `DELETE`: the previous successful publication has not been deleted;
-- `RECREATE`: the candidate has not become the user's own publication.
+- `RECREATE`: the pending publication has not become the user's own publication.
 
-#### Local discard operation
+#### Local discard validation
 
-The command validates that the current deploy candidate still matches the pending record.
+For every pending article transition, the checker validates the local deploy artifact state.
 
-If any validation fails, pending state is not changed.
+For `CREATE`, `UPDATE`, and `RECREATE`:
 
-If all candidates pass validation:
+- `deploy/articles/<pending.slug>.md` must exist.
+
+For `DELETE`:
+
+- `deploy/articles/<pending.slug>.md` must not exist.
+
+If any validation fails, return `ERROR` without modifying `pending_next_state`.
+
+The checker does not compare the deploy artifact content against the artifact content in Git HEAD.
+
+If all pending transitions pass validation:
 
 - confirmed successful article state is not changed;
 - released snapshots are not changed;
@@ -1303,7 +1352,7 @@ Per article:
 
 - `SUCCESS` advances ledger confirmed state and removes the pending entry;
 - `PENDING` keeps ledger confirmed state unchanged and retains pending;
-- `COLLISION` cleans up the failed candidate and removes its pending entry;
+- `COLLISION` removes the failed deploy artifact and clears the pending entry;
 - `UNKNOWN` or `ERROR` keeps ledger confirmed state unchanged and retains pending.
 
 After `check`:
@@ -1342,7 +1391,7 @@ An image-only change:
 - does not modify released article snapshots;
 - does not create `pending_next_state`.
 
-If an article Markdown image reference changes, the Markdown artifact changes and the normal article release rules apply.
+If an article Markdown image-reference path changes, `{article-content}` changes and the normal article release rules apply.
 
 Unused images are not removed merely because no active article currently references them. Removal is explicit through the authoritative authoring `/images` mirror.
 
@@ -1446,7 +1495,7 @@ Random suffixes are used to reduce collision probability. If a `CREATE` or `RECR
 
 ### UPDATE attribution limitation
 
-While an `UPDATE` candidate is pending, an out-of-band modification to the same remote publication may change the remote observation.
+While an `UPDATE` transition is pending, an out-of-band modification to the same remote publication may change the remote observation.
 
 Because the current UPDATE success check uses a difference from `{baseline-observation}` as evidence of update reflection, such an out-of-band modification may be mistaken for the candidate deployment.
 
