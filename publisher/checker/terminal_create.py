@@ -6,14 +6,12 @@ import re
 from uuid import UUID
 
 from checker.atomic_write import atomic_replace_bytes
+from checker.errors import LocalApplyError
+from checker.local_state import read_ledger, safe_path
 
 
 _SLUG = re.compile(r"[a-z0-9_-]{12,50}\Z")
 _OBSERVATION_KEYS = ("body_updated_at", "source_repo_updated_at", "published_at")
-
-
-class LocalApplyError(ValueError):
-  """The local state is not eligible for a CREATE SUCCESS application."""
 
 
 def _validate_article_id(article_id: str) -> None:
@@ -73,15 +71,16 @@ def apply_create_success(deploy_root: Path, article_id: str,
   _validate_article_id(article_id)
   checked_observation = _validate_observation(observation)
   root = Path(deploy_root)
-  ledger_path = root / ".zenn-authoring" / "ledger.json"
-  snapshot_path = root / ".zenn-authoring" / "released" / f"{article_id}.md"
+  ledger_path = safe_path(root, ".zenn-authoring", "ledger.json")
+  snapshot_path = safe_path(root, ".zenn-authoring", "released", f"{article_id}.md")
+  if snapshot_path.exists() and not snapshot_path.is_file():
+    raise LocalApplyError(f"Not a regular released snapshot: {snapshot_path}")
 
-  with ledger_path.open("r", encoding="utf-8") as stream:
-    ledger = json.load(stream)
+  ledger = read_ledger(root)
   pending = _read_create_pending(ledger, article_id)
 
-  artifact_path = root / "articles" / f"{pending['slug']}.md"
-  if not artifact_path.is_file() or artifact_path.is_symlink():
+  artifact_path = safe_path(root, "articles", f"{pending['slug']}.md")
+  if not artifact_path.is_file():
     raise LocalApplyError(f"Missing regular deploy artifact: {artifact_path}")
   artifact_bytes = artifact_path.read_bytes()
 

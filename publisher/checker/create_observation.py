@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from checker.local_state import read_ledger, safe_path
 from checker.terminal_create import (
   LocalApplyError,
   _read_create_pending,
@@ -49,7 +50,7 @@ def _valid_user_id(user_id: object) -> bool:
 
 def load_configured_user_id(deploy_root: Path) -> int:
   """Read numeric owner identity from configured repository state, without writing."""
-  config_path = Path(deploy_root) / ".zenn-authoring" / "config.json"
+  config_path = safe_path(deploy_root, ".zenn-authoring", "config.json")
   with config_path.open("r", encoding="utf-8") as stream:
     config = json.load(stream)
   if not isinstance(config, dict) or not isinstance(config.get("zenn_user"), dict):
@@ -120,11 +121,7 @@ def check_single_create(deploy_root: Path, article_id: str,
   try:
     _validate_article_id(article_id)
     owner_id = load_configured_user_id(root)
-    with (root / ".zenn-authoring" / "ledger.json").open(
-        "r", encoding="utf-8") as stream:
-      ledger = json.load(stream)
-    if not isinstance(ledger, dict) or not isinstance(ledger.get("pending_next_state"), dict):
-      raise LocalApplyError("Invalid ledger")
+    ledger = read_ledger(root)
     if len(ledger["pending_next_state"]) != 1:
       raise LocalApplyError("P0 single-CREATE helper requires exactly one pending article")
     pending = _read_create_pending(ledger, article_id)

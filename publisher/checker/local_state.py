@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import stat
 
-from checker.terminal_create import LocalApplyError
+from checker.errors import LocalApplyError
 
 
 def safe_path(root: Path, *parts: str) -> Path:
