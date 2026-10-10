@@ -56,8 +56,8 @@ def apply_recreate_success(deploy_root: Path, article_id: str, observation: dict
     raise LocalApplyError("Missing regular deploy artifact")
   content = artifact.read_bytes()
   snapshot = safe_path(root, ".zenn-authoring", "released", f"{article_id}.md")
-  if snapshot.exists() and not snapshot.is_file():
-    raise LocalApplyError("Not a regular released snapshot")
+  if not snapshot.is_file():
+    raise LocalApplyError("Missing regular released snapshot")
   ledger_path = safe_path(root, ".zenn-authoring", "ledger.json")
   confirmed = dict(ledger["articles"][article_id])
   confirmed.update(state="active", slug=pending["slug"],

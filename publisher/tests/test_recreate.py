@@ -96,13 +96,23 @@ class RecreateTests(unittest.TestCase):
       with self.subTest(response=response):
         self.assertEqual(classify_recreate_response(response, pending, 2).result, CreateResult.ERROR)
 
-  def test_invalid_metadata_for_either_owner(self):
+  def test_invalid_metadata_follows_owner_classification(self):
     for owner in (2, 9):
       for key in CURRENT:
         for value in (None, "", True, 3):
           with self.subTest(owner=owner, key=key, value=value):
             self.assertEqual(self.classify(self.response(owner, {**CURRENT, key: value})).result,
-                             CreateResult.ERROR)
+                             CreateResult.ERROR if owner == 2 else CreateResult.COLLISION)
+
+  def test_other_owner_missing_metadata_collision(self):
+    result = self.classify(self.response(owner=9, observation={}))
+    self.assertEqual(result.result, CreateResult.COLLISION)
+    self.assertIsNone(result.observation)
+
+  def test_own_owner_missing_metadata_error(self):
+    result = self.classify(self.response(observation={}))
+    self.assertEqual(result.result, CreateResult.ERROR)
+    self.assertIsNone(result.observation)
 
   def test_http_status_rules(self):
     for status, expected in ((401, "ERROR"), (403, "ERROR"), (408, "ERROR"),
@@ -266,6 +276,14 @@ class RecreateTests(unittest.TestCase):
     self.artifact.unlink()
     self.assert_rejected()
     self.assertEqual(self.snapshot.read_bytes(), b"old content\n")
+
+  def test_missing_snapshot_preserves_pending_ledger_and_artifact(self):
+    self.snapshot.unlink()
+    artifact_before = self.artifact.read_bytes()
+    self.assert_rejected()
+    self.assertEqual(self.read(), self.ledger)
+    self.assertEqual(self.artifact.read_bytes(), artifact_before)
+    self.assertFalse(self.snapshot.exists())
 
   def test_snapshot_replace_failure(self):
     before = self.ledger_path.read_bytes(), self.snapshot.read_bytes()

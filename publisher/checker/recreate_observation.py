@@ -5,7 +5,6 @@ from typing import Callable
 from checker.create_observation import (
   ArticleResponse, CreateObservation, CreateResult, classify_create_response,
 )
-from checker.terminal_create import _validate_observation
 
 
 def classify_recreate_response(response: ArticleResponse, pending: dict,
@@ -17,12 +16,6 @@ def classify_recreate_response(response: ArticleResponse, pending: dict,
   """
   if not isinstance(response, ArticleResponse):
     return CreateObservation(CreateResult.ERROR, detail="Invalid transport response")
-  if response.status == 200:
-    try:
-      article = response.payload.get("article")
-      _validate_observation(article)
-    except (ValueError, TypeError, AttributeError) as exc:
-      return CreateObservation(CreateResult.ERROR, detail=str(exc))
   return classify_create_response(response, pending["slug"], own_user_id)
 
 
