@@ -56,3 +56,15 @@ Do not rely on packages or modules that happen to have been installed during an 
 Project containers should not receive Git credentials or other host credentials unless a specific feature explicitly requires them.
 
 Git repository operations and deployment orchestration are separate from the application runtime. Do not add Git push capability to converter, checker, or test containers merely for convenience.
+
+## Design and implementation principles
+
+When making design decisions, consult the relevant project specifications and existing implementation to understand the intended overall system, not just the immediate task.
+
+Choose designs that fit coherently into the completed system described by the specifications, rather than optimizing only for the smallest or easiest local implementation.
+
+Keep implementation incremental and focused on the current task. Consider established future requirements when choosing architecture and responsibility boundaries, but do not implement future features prematurely.
+
+Prefer the simplest design that fits the intended overall architecture. Avoid speculative abstractions, unnecessary generalization, and refactoring unrelated to the task.
+
+The specifications are frozen. Do not silently reinterpret or modify them. If a significant inconsistency or design trade-off is discovered, explain the issue and its implications before making a specification-level decision.
