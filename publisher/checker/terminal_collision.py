@@ -5,8 +5,9 @@ from pathlib import Path
 from checker.atomic_write import atomic_replace_bytes
 from checker.local_state import ledger_bytes, read_ledger, safe_path
 from checker.terminal_create import (
-  LocalApplyError, _SLUG, _read_create_pending, _validate_article_id,
+  LocalApplyError, _read_create_pending, _validate_article_id,
 )
+from checker.terminal_recreate import read_recreate_pending
 
 
 def apply_collision(deploy_root: Path, article_id: str) -> None:
@@ -25,14 +26,7 @@ def apply_collision(deploy_root: Path, article_id: str) -> None:
   if pending.get("operation") == "CREATE":
     pending = _read_create_pending(ledger, article_id)
   elif pending.get("operation") == "RECREATE":
-    confirmed = ledger["articles"].get(article_id)
-    if not isinstance(confirmed, dict) or confirmed.get("state") != "erased":
-      raise LocalApplyError("RECREATE requires confirmed erased state")
-    slug = pending.get("slug")
-    release = pending.get("release")
-    if (pending.get("state") != "active" or not isinstance(slug, str)
-        or not _SLUG.fullmatch(slug) or type(release) is not int or release < 1):
-      raise LocalApplyError("Invalid pending RECREATE")
+    pending = read_recreate_pending(ledger, article_id)
   else:
     raise LocalApplyError("COLLISION supports only CREATE / RECREATE")
 
