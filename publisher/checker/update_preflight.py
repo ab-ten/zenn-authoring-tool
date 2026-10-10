@@ -74,6 +74,16 @@ def _validate_entry(entry: UpdateArticlePlanInput, ledger: dict):
   if not isinstance(entry.slug, str) or not _SLUG.fullmatch(entry.slug) or (
       entry.slug != confirmed.get("slug")):
     raise ValueError("UPDATE slug must equal valid confirmed slug")
+  for confirmed_id, value in ledger["articles"].items():
+    if confirmed_id == entry.article_id:
+      continue
+    if not isinstance(value, dict):
+      raise ValueError(f"Invalid confirmed entry: {confirmed_id}")
+    confirmed_slug = value.get("slug")
+    if not isinstance(confirmed_slug, str) or not _SLUG.fullmatch(confirmed_slug):
+      raise ValueError(f"Invalid confirmed slug: {confirmed_id}")
+    if confirmed_slug == entry.slug:
+      raise ValueError(f"Plan slug overlaps another confirmed article: {confirmed_id}")
   previous = confirmed.get("successful_release")
   if type(previous) is not int or previous < 1 or type(entry.release) is not int or (
       entry.release != previous + 1):

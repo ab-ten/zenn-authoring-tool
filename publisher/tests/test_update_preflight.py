@@ -207,6 +207,36 @@ class UpdatePreflightTests(unittest.TestCase):
     self.check(PreflightStatus.ERROR,
                plan=PublishPlan((plan.articles[0], replace(plan.articles[1], slug=SLUG))), calls=0)
 
+  def test_other_confirmed_slug_overlap_outside_plan(self):
+    self.ledger["articles"][OTHER] = self.confirmed(SLUG)
+    self.write_ledger()
+    result = self.check(PreflightStatus.ERROR, calls=0)
+    self.assertIn(OTHER, result.articles[0].detail)
+
+  def test_other_confirmed_non_dictionary_entry(self):
+    for value in (None, [], "invalid", 1):
+      with self.subTest(value=value):
+        self.ledger["articles"][OTHER] = value
+        self.write_ledger()
+        result = self.check(PreflightStatus.ERROR, calls=0)
+        self.assertIn(OTHER, result.articles[0].detail)
+
+  def test_other_confirmed_missing_or_invalid_slug(self):
+    for value in ({}, *({"slug": slug} for slug in (
+        None, True, 123, [], "", "a" * 11, "a" * 51,
+        "UPPERCASE-SLUG", "../unsafe-slug", SECOND + "\n"))):
+      with self.subTest(value=value):
+        self.ledger["articles"][OTHER] = value
+        self.write_ledger()
+        result = self.check(PreflightStatus.ERROR, calls=0)
+        self.assertIn(OTHER, result.articles[0].detail)
+
+  def test_valid_other_confirmed_article_outside_plan(self):
+    self.ledger["articles"][OTHER] = self.confirmed(SECOND)
+    self.write_ledger()
+    result = self.check(PreflightStatus.OK)
+    self.assertEqual(result.articles[0].baseline_observation, BASE)
+
   def test_unsupported_mixed_operations(self):
     for operation in ("CREATE", "DELETE", "RECREATE", "", None):
       self.check(PreflightStatus.ERROR,
