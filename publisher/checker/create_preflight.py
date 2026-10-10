@@ -131,9 +131,15 @@ def preflight_create(
           raise ValueError("CREATE already has a confirmed article")
         if entry.article_id in ids or entry.slug in slugs:
           raise ValueError("Duplicate plan article ID or slug")
-        if any(isinstance(value, dict) and value.get("slug") == entry.slug
-               for value in ledger["articles"].values()):
-          raise ValueError("Plan slug overlaps a confirmed article")
+        for confirmed_id, value in ledger["articles"].items():
+          if not isinstance(value, dict):
+            raise ValueError(f"Invalid confirmed entry: {confirmed_id}")
+          confirmed_slug = value.get("slug")
+          if not isinstance(confirmed_slug, str) or not re.fullmatch(
+              r"[a-z0-9_-]{12,50}", confirmed_slug):
+            raise ValueError(f"Invalid confirmed slug: {confirmed_id}")
+          if confirmed_slug == entry.slug:
+            raise ValueError("Plan slug overlaps a confirmed article")
         ids.add(entry.article_id)
         slugs.add(entry.slug)
       except (ValueError, TypeError, AttributeError) as exc:

@@ -179,6 +179,41 @@ class CreatePreflightTests(unittest.TestCase):
     self.write_ledger()
     self.check(PreflightStatus.ERROR, calls=0)
 
+  def test_confirmed_non_dictionary_entry(self):
+    for value in (None, [], "invalid", 1):
+      with self.subTest(value=value):
+        self.ledger["articles"][OTHER] = value
+        self.write_ledger()
+        result = self.check(PreflightStatus.ERROR, ArticleResponse(404), calls=0)
+        self.assertIn(OTHER, result.articles[0].detail)
+
+  def test_confirmed_missing_slug(self):
+    self.ledger["articles"][OTHER] = {"state": "active"}
+    self.write_ledger()
+    result = self.check(PreflightStatus.ERROR, ArticleResponse(404), calls=0)
+    self.assertIn(OTHER, result.articles[0].detail)
+
+  def test_confirmed_invalid_slug(self):
+    for slug in (None, True, 123, [], "", "a" * 11, "a" * 51,
+                 "UPPERCASE-SLUG", "../unsafe-slug", SECOND + "\n"):
+      with self.subTest(slug=slug):
+        self.ledger["articles"][OTHER] = {"slug": slug}
+        self.write_ledger()
+        result = self.check(PreflightStatus.ERROR, ArticleResponse(404), calls=0)
+        self.assertIn(OTHER, result.articles[0].detail)
+
+  def test_valid_other_confirmed_entry(self):
+    self.ledger["articles"][OTHER] = {
+      "slug": SECOND, "state": "active", "successful_release": 1,
+      "successful_zenn_observation": {
+        "body_updated_at": "2026-10-10T01:00:00+09:00",
+        "source_repo_updated_at": "2026-10-10T01:00:00+09:00",
+        "published_at": "2026-10-10T01:00:00+09:00",
+      },
+    }
+    self.write_ledger()
+    self.check(PreflightStatus.OK, ArticleResponse(404))
+
   def test_invalid_and_missing_ledger(self):
     ledger = self.meta / "ledger.json"
     for content in ("invalid", "[]", '{"articles":{}}'):
