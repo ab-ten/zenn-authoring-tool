@@ -34,7 +34,10 @@ def read_recreate_pending(ledger: dict, article_id: str) -> dict:
   for entries in (ledger["articles"], ledger["pending_next_state"]):
     for other_id, entry in entries.items():
       if not isinstance(entry, dict):
-        raise LocalApplyError("Invalid local article entry")
+        if entries is ledger["articles"]:
+          raise LocalApplyError("Invalid local article entry")
+        # 不正な別記事の pending は、その記事の validation で拒否します。
+        continue
       if other_id != article_id and entry.get("slug") in (confirmed["slug"], pending["slug"]):
         raise LocalApplyError("RECREATE slug overlaps another managed article")
   return pending

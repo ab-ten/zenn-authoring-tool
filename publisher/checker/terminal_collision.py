@@ -38,7 +38,8 @@ def apply_collision(deploy_root: Path, article_id: str) -> None:
       raise LocalApplyError("Collision slug overlaps confirmed state")
   for other_id, entry in ledger["pending_next_state"].items():
     if not isinstance(entry, dict):
-      raise LocalApplyError("Invalid pending entry")
+      # 不正な別記事の pending は、その記事の validation で拒否します。
+      continue
     if other_id != article_id and entry.get("slug") == slug:
       raise LocalApplyError("Collision slug overlaps another pending")
 
