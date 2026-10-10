@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from checker import create_preflight, update_preflight, delete_preflight, recreate_preflight
-from converter.models import ArticlePlanningResult, PreparedSourceRecord
+from converter.models import ArticlePlanEntry, ArticlePlanningResult, PreparedSourceRecord
 from converter.planning import plan_articles
 
 
@@ -24,6 +24,42 @@ def confirmed(state="active", slug=SLUG):
 
 
 class ArticlePlanningTests(unittest.TestCase):
+  def test_entry_rejects_unsupported_operations(self):
+    for operation in (None, "", "create", "hold", "UNKNOWN", 1, []):
+      with self.subTest(operation=operation), self.assertRaises(ValueError):
+        ArticlePlanEntry(ID, operation, SLUG, "active", 1, SNAPSHOT)
+
+  def test_entry_requires_publish_candidate_content(self):
+    for operation in ("CREATE", "UPDATE", "RECREATE"):
+      for content in (None, b"article", [], {}, 1, True):
+        with self.subTest(operation=operation, content=content), self.assertRaises(ValueError):
+          ArticlePlanEntry(ID, operation, SLUG, "active", 1, content)
+      for content in ("", SNAPSHOT):
+        with self.subTest(operation=operation, content=content):
+          entry = ArticlePlanEntry(ID, operation, SLUG, "active", 1, content)
+          self.assertEqual(entry.candidate_content, content)
+
+  def test_entry_delete_requires_none_content(self):
+    self.assertIsNone(ArticlePlanEntry(ID, "DELETE", SLUG, "erased", 3).candidate_content)
+    for content in ("", SNAPSHOT, b"article", [], {}, 0, False):
+      with self.subTest(content=content), self.assertRaises(ValueError):
+        ArticlePlanEntry(ID, "DELETE", SLUG, "erased", 3, content)
+
+  def test_entry_override_validation_and_defensive_copy(self):
+    for operation in ("CREATE", "DELETE", "RECREATE"):
+      content = None if operation == "DELETE" else SNAPSHOT
+      with self.subTest(operation=operation), self.assertRaises(ValueError):
+        ArticlePlanEntry(ID, operation, SLUG, "active", 1, content, OBSERVATION)
+    for override in ([], {}, "invalid", {**OBSERVATION, "published_at": ""}):
+      with self.subTest(override=override), self.assertRaises(ValueError):
+        ArticlePlanEntry(ID, "UPDATE", SLUG, "active", 4, SNAPSHOT, override)
+    override = dict(OBSERVATION)
+    entry = ArticlePlanEntry(ID, "UPDATE", SLUG, "active", 4, SNAPSHOT, override)
+    override["published_at"] = "changed"
+    self.assertEqual(dict(entry.observation_override), OBSERVATION)
+    with self.assertRaises(TypeError):
+      entry.observation_override["published_at"] = "changed"
+
   def setUp(self):
     self.source = PreparedSourceRecord(ID, "active", SLUG, 4, SNAPSHOT + "changed")
     self.ledger = {"articles": {ID: confirmed()}, "pending_next_state": {}}

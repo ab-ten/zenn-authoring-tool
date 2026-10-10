@@ -37,8 +37,10 @@ class ArticlePlanEntry:
   observation_override: Mapping[str, str] | None = None
 
   def __post_init__(self):
-    if self.candidate_content is not None and not isinstance(self.candidate_content, str):
-      raise ValueError("Candidate content must be a string")
+    if self.operation not in ("CREATE", "UPDATE", "DELETE", "RECREATE"):
+      raise ValueError("Unsupported article operation")
+    if self.operation != "DELETE" and not isinstance(self.candidate_content, str):
+      raise ValueError("Publish operation requires string candidate content")
     if self.operation == "DELETE" and self.candidate_content is not None:
       raise ValueError("DELETE does not retain candidate content")
     if self.observation_override is not None:
