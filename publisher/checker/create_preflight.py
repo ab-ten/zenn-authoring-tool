@@ -101,6 +101,26 @@ def _classify(response: object, slug: str, owner_id: int) -> tuple[PreflightStat
   return PreflightStatus.COLLISION, "CREATE slug belongs to another user"
 
 
+def _validate_entry(entry: ArticlePlanInput, ledger: dict) -> None:
+  """CREATE の記事別 ledger 前提を検証します。"""
+  _validate_article_id(entry.article_id)
+  if entry.operation != "CREATE":
+    raise ValueError(f"Unsupported operation: {entry.operation}")
+  if not isinstance(entry.slug, str) or not re.fullmatch(r"[a-z0-9_-]{12,50}", entry.slug):
+    raise ValueError("Invalid plan slug")
+  if entry.article_id in ledger["articles"]:
+    raise ValueError("CREATE already has a confirmed article")
+  for confirmed_id, value in ledger["articles"].items():
+    if not isinstance(value, dict):
+      raise ValueError(f"Invalid confirmed entry: {confirmed_id}")
+    confirmed_slug = value.get("slug")
+    if not isinstance(confirmed_slug, str) or not re.fullmatch(
+        r"[a-z0-9_-]{12,50}", confirmed_slug):
+      raise ValueError(f"Invalid confirmed slug: {confirmed_id}")
+    if confirmed_slug == entry.slug:
+      raise ValueError("Plan slug overlaps a confirmed article")
+
+
 def preflight_create(
     deploy_root: Path, plan: PublishPlanInput,
     fetch_article: Callable[[str], ArticleResponse] = http_fetch_article,
@@ -122,24 +142,9 @@ def preflight_create(
     ids, slugs = set(), set()
     for entry in entries:
       try:
-        _validate_article_id(entry.article_id)
-        if entry.operation != "CREATE":
-          raise ValueError(f"Unsupported operation: {entry.operation}")
-        if not isinstance(entry.slug, str) or not re.fullmatch(r"[a-z0-9_-]{12,50}", entry.slug):
-          raise ValueError("Invalid plan slug")
-        if entry.article_id in ledger["articles"]:
-          raise ValueError("CREATE already has a confirmed article")
+        _validate_entry(entry, ledger)
         if entry.article_id in ids or entry.slug in slugs:
           raise ValueError("Duplicate plan article ID or slug")
-        for confirmed_id, value in ledger["articles"].items():
-          if not isinstance(value, dict):
-            raise ValueError(f"Invalid confirmed entry: {confirmed_id}")
-          confirmed_slug = value.get("slug")
-          if not isinstance(confirmed_slug, str) or not re.fullmatch(
-              r"[a-z0-9_-]{12,50}", confirmed_slug):
-            raise ValueError(f"Invalid confirmed slug: {confirmed_id}")
-          if confirmed_slug == entry.slug:
-            raise ValueError("Plan slug overlaps a confirmed article")
         ids.add(entry.article_id)
         slugs.add(entry.slug)
       except (ValueError, TypeError, AttributeError) as exc:
