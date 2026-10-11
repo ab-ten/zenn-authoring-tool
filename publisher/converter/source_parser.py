@@ -95,18 +95,8 @@ def snapshot_published_at(content: str) -> datetime | None:
   return _validate_front_matter(fields)
 
 
-def parse_source(markdown: str) -> ParsedSource:
-  """先頭管理ブロックを解析し、管理コメント専用行を改行ごと除去します。
-
-  コメント除去後に空白しか残らない管理コメント行は行全体を除去します。
-  本文と同じ行のコメントはコメント部分のみを除去します。
-  コメントを含まない明示的な空行と、本文の空白・改行は保持します。
-  最初の本文または一般 HTML コメントで管理ブロックを終了します。
-  本文中の管理コメント風文字列も本文として保持します。
-  UUID、state、slug、release 遷移と override representation は planner が検証します。
-  この API は実 Converter entry ではなく、entry guards は後続工程の責務です。
-  """
-  fields, offset = _front_matter(markdown)
+def _management_comments(markdown: str, offset: int) -> tuple[dict, list]:
+  """先頭管理ブロックの構文と重複を検証します。"""
   values, spans = {}, []
   while True:
     whitespace = re.match(r"[ \t\r\n]*", markdown[offset:])
@@ -132,6 +122,39 @@ def parse_source(markdown: str) -> ParsedSource:
     values[key] = value
     spans.append((start, end))
     offset = end
+  return values, spans
+
+
+def minimal_source_state(markdown: str) -> str:
+  """Front Matter の境界と管理ブロックから cleanliness 用 state を取得します。"""
+  if not isinstance(markdown, str):
+    raise ValueError("Markdown must be a string")
+  opening = re.match(r"---(?:\r\n|\n)", markdown)
+  if opening is None:
+    raise ValueError("Missing opening Front Matter delimiter")
+  closing = re.search(r"^---(?:\r\n|\n|$)", markdown[opening.end():], re.MULTILINE)
+  if closing is None:
+    raise ValueError("Missing closing Front Matter delimiter")
+  values, _ = _management_comments(markdown, opening.end() + closing.end())
+  state = values.get("state")
+  if state not in ("active", "erased", "hold"):
+    raise ValueError("Missing or invalid source state")
+  return state
+
+
+def parse_source(markdown: str) -> ParsedSource:
+  """先頭管理ブロックを解析し、管理コメント専用行を改行ごと除去します。
+
+  コメント除去後に空白しか残らない管理コメント行は行全体を除去します。
+  本文と同じ行のコメントはコメント部分のみを除去します。
+  コメントを含まない明示的な空行と、本文の空白・改行は保持します。
+  最初の本文または一般 HTML コメントで管理ブロックを終了します。
+  本文中の管理コメント風文字列も本文として保持します。
+  UUID、state、slug、release 遷移と override representation は planner が検証します。
+  この API は実 Converter entry ではなく、entry guards は後続工程の責務です。
+  """
+  fields, offset = _front_matter(markdown)
+  values, spans = _management_comments(markdown, offset)
   if not {"id", "state"} <= values.keys():
     raise ValueError("Missing required id or state management comment")
   release = None
