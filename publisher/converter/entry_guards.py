@@ -55,6 +55,9 @@ def validate_inputs(sources: tuple[tuple[str, str], ...], images: tuple[str, ...
   flagged_images = {path for path in flagged if path.startswith("images/")}
   if flagged_images:
     raise GuardError(f"Unreliable image index flags: {sorted(flagged_images)!r}")
+  dirty_images = {path for path in dirty if path == "images" or path.startswith("images/")}
+  if dirty_images:
+    raise GuardError(f"Image must be tracked in HEAD and clean: {sorted(dirty_images)!r}")
   for path in images:
     if path not in tracked or path in dirty:
       raise GuardError(f"Image must be tracked in HEAD and clean: {path!r}")

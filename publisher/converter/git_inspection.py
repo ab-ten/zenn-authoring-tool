@@ -144,6 +144,32 @@ def head_paths(root: Path) -> frozenset[str]:
   return frozenset(_path(raw) for raw in output[:-1].split(b"\0")) if output else frozenset()
 
 
+def head_entries(root: Path) -> dict[str, tuple[str, str]]:
+  """NUL 区切りの HEAD tree から path ごとの mode と object type を取得します。"""
+  output = git(root, "ls-tree", "-r", "-z", "HEAD")
+  if output and not output.endswith(b"\0"):
+    raise GuardError("Malformed Git HEAD entries")
+  entries = {}
+  for raw in output[:-1].split(b"\0") if output else ():
+    header, separator, name = raw.partition(b"\t")
+    fields = header.split(b" ")
+    if not separator or len(fields) != 3:
+      raise GuardError("Malformed Git HEAD entry")
+    try:
+      mode, kind, oid = (field.decode("ascii") for field in fields)
+    except UnicodeError as exc:
+      raise GuardError("Malformed Git HEAD entry") from exc
+    if (len(mode) != 6 or any(c not in "01234567" for c in mode) or
+        kind not in ("blob", "tree", "commit") or len(oid) not in (40, 64) or
+        any(c not in "0123456789abcdef" for c in oid)):
+      raise GuardError("Malformed Git HEAD entry")
+    path = _path(name)
+    if path in entries:
+      raise GuardError("Duplicate Git HEAD entry")
+    entries[path] = (mode, kind)
+  return entries
+
+
 def parse_index_flags(output: bytes) -> frozenset[str]:
   """ls-files -v -z から cleanliness を隠す index flags の path を取得します。"""
   if not output:
