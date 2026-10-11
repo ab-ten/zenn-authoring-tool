@@ -107,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
       print("\n".join(_diagnostics(outcome)), file=sys.stderr)
       print("計画は適用していません。", file=sys.stderr)
       return ExitCode.COLLISION if outcome.preflight.result is PreflightStatus.COLLISION else ExitCode.ERROR
+    entries = {entry.article_id: entry for entry in outcome.plan.articles}
+    for item in outcome.preflight.articles:
+      for warning in getattr(item, "warnings", ()):
+        entry = entries.get(item.article_id)
+        context = f"{entry.operation} {entry.slug}" if entry else f"article {item.article_id} {item.slug}"
+        print(f"{context}: warning: {warning}", file=sys.stderr)
     print(_summary(outcome))
     return ExitCode.COMPLETED
   except KeyboardInterrupt:

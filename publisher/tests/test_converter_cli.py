@@ -251,6 +251,58 @@ class ConverterCliTests(unittest.TestCase):
     self.assert_failure_output(code, stdout, stderr)
     self.assertIn('warning: Already deleted', stderr)
 
+  def assert_ok_warning(self, articles, results, warning):
+    self.runner.return_value = outcome(articles)
+    baseline_code, baseline_stdout, baseline_stderr = self.convert()
+    self.assertEqual(baseline_code, cli.ExitCode.COMPLETED)
+    self.assertEqual(baseline_stderr, '')
+    self.runner.reset_mock()
+    self.runner.return_value = outcome(articles, results=results)
+    code, stdout, stderr = self.convert()
+    self.assertEqual(code, cli.ExitCode.COMPLETED)
+    self.assertEqual(stdout, baseline_stdout)
+    self.assertEqual(stderr, f'DELETE {SLUG}: warning: {warning}\n')
+    self.runner.assert_called_once_with(ROOT)
+
+  def test_ok_delete_already_absent_warning(self):
+    warning = 'Publication already absent (HTTP 404)'
+    item = DeleteArticlePreflight(ID, SLUG, PreflightStatus.OK,
+      detail='DELETE may continue', warnings=(warning,))
+    self.assert_ok_warning((article('DELETE'),), (item,), warning)
+
+  def test_ok_delete_reused_slug_warning(self):
+    warning = 'Old slug already reused by another user'
+    observation = {'body_updated_at': 'remote', 'source_repo_updated_at': 'remote', 'published_at': 'date'}
+    item = DeleteArticlePreflight(ID, SLUG, PreflightStatus.OK,
+      detail='DELETE may continue', warnings=(warning,), current_observation=observation)
+    self.assert_ok_warning((article('DELETE'),), (item,), warning)
+
+  def test_ok_mixed_operations_show_only_delete_warning(self):
+    warning = 'Publication already absent'
+    create = article('CREATE', 'create-id', 'created-article-slug')
+    update = article('UPDATE', 'update-id', 'updated-article-slug')
+    observation = {'body_updated_at': 'remote', 'source_repo_updated_at': 'remote', 'published_at': 'date'}
+    results = (
+      ArticlePreflight(create.article_id, create.slug, PreflightStatus.OK, 'CREATE detail'),
+      UpdateArticlePreflight(update.article_id, update.slug, PreflightStatus.OK,
+        'UPDATE detail', baseline_observation=observation, current_observation=observation),
+      DeleteArticlePreflight(ID, SLUG, PreflightStatus.OK, warnings=(warning,)),
+    )
+    self.assert_ok_warning((create, update, article('DELETE')), results, warning)
+
+  def test_ok_without_warnings_has_no_extra_diagnostics(self):
+    observation = {'body_updated_at': 'remote', 'source_repo_updated_at': 'remote', 'published_at': 'date'}
+    item = DeleteArticlePreflight(ID, SLUG, PreflightStatus.OK,
+      'DELETE detail', current_observation=observation)
+    self.runner.return_value = outcome((article('DELETE'),), results=(item,))
+    code, stdout, stderr = self.convert()
+    self.assertEqual(code, cli.ExitCode.COMPLETED)
+    self.assertEqual(stderr, '')
+    self.assertIn('articles: CREATE=0 UPDATE=0 DELETE=1 RECREATE=0', stdout)
+    for text in ('Preflight:', 'DELETE detail', 'current_observation', 'warning:'):
+      self.assertNotIn(text, stdout)
+    self.runner.assert_called_once_with(ROOT)
+
   def test_global_error_without_article_results(self):
     self.runner.return_value = outcome((article(),), status=PreflightStatus.ERROR,
       diagnostics=('Missing owner configuration',))
