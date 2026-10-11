@@ -96,9 +96,11 @@ def snapshot_published_at(content: str) -> datetime | None:
 
 
 def parse_source(markdown: str) -> ParsedSource:
-  """先頭管理ブロックのみを解析し、コメントの文字範囲だけを除去します。
+  """先頭管理ブロックを解析し、管理コメント専用行を改行ごと除去します。
 
-  Front Matter 後と管理コメント間の空白は許容してそのまま保持します。
+  コメント除去後に空白しか残らない管理コメント行は行全体を除去します。
+  本文と同じ行のコメントはコメント部分のみを除去します。
+  コメントを含まない明示的な空行と、本文の空白・改行は保持します。
   最初の本文または一般 HTML コメントで管理ブロックを終了します。
   本文中の管理コメント風文字列も本文として保持します。
   UUID、state、slug、release 遷移と override representation は planner が検証します。
@@ -149,10 +151,19 @@ def parse_source(markdown: str) -> ParsedSource:
       raise ValueError("Observation override cannot be null")
   published_at = _validate_front_matter(fields, values["state"])
   pieces, offset = [], 0
-  for start, end in spans:
-    pieces.append(markdown[offset:start])
+  for line in re.findall(r"[^\n]*\n|[^\n]+$", markdown):
+    end = offset + len(line)
+    fragments, cursor, removed = [], offset, False
+    for start, stop in spans:
+      if start < end and stop > offset:
+        fragments.append(markdown[cursor:max(offset, start)])
+        cursor = min(end, stop)
+        removed = True
+    fragments.append(markdown[cursor:end])
+    remainder = "".join(fragments)
+    if not removed or remainder.strip(" \t\r\n"):
+      pieces.append(remainder)
     offset = end
-  pieces.append(markdown[offset:])
   record = PreparedSourceRecord(values["id"], values["state"], values.get("slug"),
                                 release, "".join(pieces), override)
   return ParsedSource(record, published_at)

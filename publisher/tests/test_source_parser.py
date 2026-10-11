@@ -26,16 +26,16 @@ class SourceParserTests(unittest.TestCase):
         body = ('\n<!-- ordinary -->\n# Heading\n\n```html\n'
                 '<!-- #id:not-management -->\n```\n<!-- #state:hold -->' + trailing)
         markdown = source(body=body).replace("\n", newline)
-        expected = (FRONT + "\n" * 4 + body).replace("\n", newline)
+        expected = (FRONT + body).replace("\n", newline)
         with self.subTest(newline=newline, trailing=trailing):
           parsed = parse_source(markdown)
           self.assertEqual(parsed.record.candidate_content, expected)
           self.assertEqual(parsed.record.article_id, ID)
 
-  def test_management_whitespace_is_preserved(self):
+  def test_management_lines_removed_but_explicit_blank_lines_preserved(self):
     markdown = FRONT + f" \t<!-- #id:{ID} -->\r\n\n <!-- #state:hold -->  \nBody"
     self.assertEqual(parse_source(markdown).record.candidate_content,
-                     FRONT + " \t\r\n\n   \nBody")
+                     FRONT + "\nBody")
 
   def test_optional_slug_and_release_before_publish(self):
     parsed = parse_source(FRONT + f"<!-- #id:{ID} -->\n<!-- #state:hold -->\nBody")
@@ -71,13 +71,59 @@ class SourceParserTests(unittest.TestCase):
   def test_general_hash_comment_is_not_management(self):
     body = "<!-- # Heading notes -->\nBody"
     self.assertEqual(parse_source(source(body=body)).record.candidate_content,
-                     FRONT + "\n" * 4 + body)
+                     FRONT + body)
 
   def test_front_matter_original_yaml_formatting_is_preserved(self):
     front = ('---\npublished: true\ntopics: []\n# Notes\ntype: idea\n'
              "emoji: ''\ntitle: 'Quoted title'  \n---\n")
     self.assertEqual(parse_source(source(front=front, body="")).record.candidate_content,
-                     front + "\n" * 4)
+                     front)
+
+  def test_optional_management_additions_and_removals_do_not_change_content(self):
+    for newline in ("\n", "\r\n"):
+      baseline = FRONT + f"<!-- #id:{ID} -->\n<!-- #state:hold -->\n\nBody\n"
+      for optional in (f"<!-- #slug:{SLUG} -->\n", "<!-- #release:3 -->\n",
+                       '<!-- #observation-override:{"published_at":"time"} -->\n'):
+        with self.subTest(newline=newline, optional=optional):
+          added = baseline.replace("\n\nBody", "\n" + optional + "\nBody")
+          self.assertEqual(parse_source(added.replace("\n", newline)).record.candidate_content,
+                           parse_source(baseline.replace("\n", newline)).record.candidate_content)
+
+  def test_inline_and_multiple_management_comments_remain_supported(self):
+    for newline in ("\n", "\r\n"):
+      prefix = FRONT.replace("\n", newline)
+      block = f" \t<!-- #id:{ID} --> <!-- #state:hold -->  "
+      for ending in (newline, ""):
+        with self.subTest(newline=newline, ending=ending):
+          self.assertEqual(parse_source(prefix + block + ending).record.candidate_content, prefix)
+      self.assertEqual(parse_source(prefix + block + "Body" + newline).record.candidate_content,
+                       prefix + " \t   Body" + newline)
+
+  def test_multiline_management_comments_preserve_body_blank_lines(self):
+    markdown = FRONT + f"<!--\n #id:{ID}\n-->\n<!-- #state:hold -->\n\n \t\nBody\n\n"
+    self.assertEqual(parse_source(markdown).record.candidate_content, FRONT + "\n \t\nBody\n\n")
+
+  def test_override_cleanup_after_update_does_not_plan_another_update(self):
+    observation = {key: "time" for key in (
+      "body_updated_at", "source_repo_updated_at", "published_at")}
+    for newline in ("\n", "\r\n"):
+      with self.subTest(newline=newline):
+        previous = parse_source(source(release=3, body="Previous\n").replace("\n", newline))
+        clean = source(release=4, body="\n \t\nRevised\n\n").replace("\n", newline)
+        override_line = f"<!-- #observation-override:{json.dumps(observation)} -->" + newline
+        overridden = clean.replace(newline * 2 + " \t",
+                                   newline + override_line + newline + " \t", 1)
+        parsed = parse_source(overridden)
+        ledger = {"articles": {ID: {"state": "active", "slug": SLUG,
+                  "successful_release": 3}}, "pending_next_state": {}}
+        update = plan_articles([parsed.record], ledger, {ID: previous.record.candidate_content})
+        self.assertEqual(update.articles[0].operation, "UPDATE")
+        self.assertEqual(dict(update.articles[0].observation_override), observation)
+        snapshot = update.articles[0].candidate_content
+        cleaned = parse_source(clean)
+        self.assertEqual(cleaned.record.candidate_content, snapshot)
+        ledger["articles"][ID]["successful_release"] = 4
+        self.assertEqual(plan_articles([cleaned.record], ledger, {ID: snapshot}).articles, ())
 
   def test_invalid_uuid_is_passed_to_planner(self):
     parsed = parse_source(source().replace(ID, "not-a-uuid"))
