@@ -37,7 +37,8 @@ def plan_articles(
   snapshot は canonical article ID をキーとする、未正規化の content です。
   pending guard は sources の列挙より先に実行します。ただし source record
   生成自体は呼び出し側の責務であり、実 entry の worktree/pending guard、
-  parser、image diff、final PublishPlan、preflight、apply は未実装です。
+  parser の呼び出しも呼び出し側が行います。image diff、final PublishPlan、
+  preflight、apply は未実装です。
   """
   if not isinstance(ledger, Mapping) or not isinstance(
       ledger.get("pending_next_state"), Mapping):

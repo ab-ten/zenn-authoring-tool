@@ -43,6 +43,9 @@ RUN set -eux; \
     ldd /usr/local/libexec/git-core/git-remote-https > /dev/null
 # ldd は git clone などが libexpat を必要としているのではないかという疑惑があったためチェックしている
 
+COPY requirements.txt /tmp/publisher-requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/publisher-requirements.txt
+
 ENV TZ=Asia/Tokyo \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
