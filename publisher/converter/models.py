@@ -1,4 +1,4 @@
-"""パース済み入力と、final PublishPlan ではない記事 planning result を定義します。"""
+"""パース済み入力、部分計画と最終の不変 PublishPlan を定義します。"""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -102,6 +102,26 @@ class ImagePlanningResult:
     if len(set(paths)) != len(paths):
       raise ValueError("Duplicate image operation")
     object.__setattr__(self, "images", tuple(sorted(self.images, key=lambda entry: entry.path)))
+
+  @property
+  def has_image_changes(self) -> bool:
+    return bool(self.images)
+
+
+@dataclass(frozen=True)
+class PublishPlan:
+  """検証済みの記事・画像 entry のみを保持する最終計画です。"""
+
+  articles: tuple[ArticlePlanEntry, ...] = ()
+  images: tuple[ImagePlanEntry, ...] = ()
+
+  def __post_init__(self):
+    if not isinstance(self.articles, tuple) or not all(
+        isinstance(entry, ArticlePlanEntry) for entry in self.articles):
+      raise TypeError("Articles must be a tuple of immutable article entries")
+    if not isinstance(self.images, tuple) or not all(
+        isinstance(entry, ImagePlanEntry) for entry in self.images):
+      raise TypeError("Images must be a tuple of immutable image entries")
 
   @property
   def has_image_changes(self) -> bool:
