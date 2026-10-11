@@ -614,6 +614,7 @@ Then:
 - Image-only changes do not change article ledger state or released snapshots.
 - Changing an image-reference path in article Markdown changes `{article-content}` and follows the normal article release rules.
 - Any asset placed under authoring `/images` must be safe to synchronize to Zenn.
+- Repository-relative image paths must not contain a backslash (`\`) in any directory or filename component.
 - Private, secret, or otherwise non-deployable assets must not be stored there.
 - Conversion fails before deploy-worktree modification if any mirror input has an unsupported extension, exceeds the Phase 0 local size limit, is not a normal Git blob, or is a filesystem special file.
 - Lack of a Markdown reference does not by itself make an image invalid.
@@ -628,6 +629,7 @@ Examples include:
 - an image mirror input that is a Git symlink or gitlink;
 - a filesystem special file under the image mirror input;
 - an unsupported or non-lowercase image extension;
+- a backslash (`\`) in an authoring or deploy image path;
 - an image larger than the `3_000_000`-byte local limit;
 - an invalid Markdown image reference path;
 - deleting an image still referenced by a published article;

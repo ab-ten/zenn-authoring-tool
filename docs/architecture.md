@@ -129,7 +129,9 @@ The Phase 0 local image constraints are:
 - the accepted extension spellings are lowercase only;
 - each file must be at most `3_000_000` bytes;
 - directory structure below `/images` is unrestricted;
-- no additional filename-character restriction is imposed;
+- image paths use `/` as the directory separator;
+- backslash (`\`) is forbidden anywhere in a repository-relative image path, including directory and filename components;
+- no additional filename-character restriction is imposed beyond this prohibition;
 - each mirrored Git entry must be a normal blob entry;
 - Git symlinks and gitlinks are rejected; and
 - filesystem special files are rejected.
@@ -723,10 +725,13 @@ After per-article processing and article-global checks, and before computing the
 
 For each mirror input, the converter validates:
 
+- that its repository-relative path contains no backslash (`\`), including in directory and filename components;
 - that the Git entry is a normal blob rather than a symlink or gitlink;
 - that the filesystem object is not a special file;
 - that the extension is one of the supported lowercase extensions; and
 - that the file size does not exceed `3_000_000` bytes.
+
+The same backslash prohibition applies when inspecting existing deploy `/images` entries, including entries that would otherwise be unchanged or deleted. An invalid path causes conversion to fail before publish-plan finalization or deploy-worktree modification.
 
 If any image validation fails, conversion stops before image mirror-difference calculation, publish-plan finalization, state-checker preflight, or deploy-worktree application.
 
