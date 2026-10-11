@@ -271,7 +271,17 @@ For an operation that publishes `{article-content}`, source `#release` declares 
 
 The converter parses consecutive management comments immediately following the Front Matter.
 
-When candidate article content is generated, all authoring-tool management comments are removed. The Zenn Front Matter and article body are otherwise preserved according to the normal rendering rules.
+When generating candidate article content, management comments in this leading block are removed according to the following rules:
+
+- If a line contains only management comments and whitespace, the entire line, including its line ending, is removed.
+- If other non-whitespace content remains on the same line, only the management comment spans are removed. The remaining text and line ending are preserved.
+- Blank or whitespace-only lines that contain no management comment are preserved.
+- Ordinary HTML comments and comments outside the leading management block are preserved.
+- The original LF or CRLF line endings of the remaining content are preserved.
+
+Adding, removing, or modifying a standalone management comment line does not change candidate article content when all other source text remains unchanged.
+
+The Zenn Front Matter and the remaining article body are otherwise preserved without reformatting or reserialization.
 
 Management comment representation does not itself perform validation or transition classification. Those responsibilities belong to the converter and state checker.
 
@@ -683,7 +693,7 @@ For an `active` article for which no publish operation was generated:
 
 Candidate article content is generated from the authoring source Markdown.
 
-Generation removes only the authoring-tool management HTML comments.
+Generation removes authoring-tool management comments and their associated line content according to the rules defined under Authoring source representation.
 
 The Zenn Front Matter and article body are otherwise preserved by the normal renderer.
 
