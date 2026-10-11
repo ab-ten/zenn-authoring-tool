@@ -293,6 +293,58 @@ class ImagePlanningTests(unittest.TestCase):
     self.commit(self.deploy)
     self.assertEqual(self.changes(), (ImagePlanEntry("ADD", "images/asset.png", b"image"),))
 
+  def _assert_deploy_gitlink_rejected(self, relative):
+    oid = fixture_git(self.deploy, "rev-parse", "HEAD").decode().strip()
+    if relative == "images":
+      fixture_git(self.deploy, "rm", "-r", "images")
+      (self.deploy / "images").mkdir()
+    else:
+      (self.deploy / relative).mkdir(parents=True)
+    fixture_git(self.deploy, "update-index", "--add", "--cacheinfo", f"160000,{oid},{relative}")
+    fixture_git(self.deploy, "commit", "-m", "deploy gitlink")
+    self.assertEqual(head_entries(self.deploy)[relative], ("160000", "commit"))
+    self.assertEqual(tuple((self.deploy / relative).iterdir()), ())
+    before = snapshot(self.root)
+    self.assertEqual(fixture_git(self.deploy, "--no-optional-locks", "status",
+                                 "--porcelain=v1", "-z", "--untracked-files=all"), b"")
+    with patch.object(images, "_mirror_diff", side_effect=AssertionError("Unexpected diff")) as diff:
+      with self.assertRaisesRegex(GuardError, "Unsafe deploy image Git entry"):
+        self.plan()
+      diff.assert_not_called()
+    self.assertEqual(snapshot(self.root), before)
+
+  def test_deploy_empty_gitlink(self):
+    self._assert_deploy_gitlink_rejected("images/submodule.png")
+
+  def test_deploy_nested_empty_gitlink(self):
+    self._assert_deploy_gitlink_rejected("images/nested/submodule.png")
+
+  def test_deploy_images_root_gitlink(self):
+    self._assert_deploy_gitlink_rejected("images")
+
+  def test_deploy_normal_blob_modes(self):
+    self.put(self.deploy, "executable.png", b"deploy-only")
+    (self.deploy / "images/executable.png").chmod(0o755)
+    fixture_git(self.deploy, "update-index", "--chmod=+x", "images/executable.png")
+    self.commit(self.deploy)
+    entries = head_entries(self.deploy)
+    self.assertEqual(entries["images/asset.png"], ("100644", "blob"))
+    self.assertEqual(entries["images/executable.png"], ("100755", "blob"))
+    self.assertEqual(self.changes(), (ImagePlanEntry("DELETE", "images/executable.png"),))
+
+  def test_authoring_validation_precedes_deploy_git_inspection(self):
+    self.put(self.root, "invalid.svg")
+    original = images.head_entries
+
+    def inspect(root):
+      self.assertEqual(root, self.root)
+      return original(root)
+
+    with patch.object(images, "head_entries", side_effect=inspect) as entries:
+      with self.assertRaisesRegex(GuardError, "extension"):
+        self.plan()
+      entries.assert_called_once_with(self.root)
+
   def test_unsafe_deploy_symlink(self):
     (self.deploy / "images/link.png").symlink_to(self.root / ".gitignore")
     self.commit(self.deploy)

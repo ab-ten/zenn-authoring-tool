@@ -63,6 +63,10 @@ def _validate_images(inputs: CheckedInputs) -> dict[str, bytes]:
 
 
 def _deploy_images(root: Path) -> dict[str, bytes]:
+  for path, entry in head_entries(root).items():
+    if (path == "images" or path.startswith("images/")) and entry not in (
+        ("100644", "blob"), ("100755", "blob")):
+      raise GuardError(f"Unsafe deploy image Git entry (requires normal blob): {path!r}")
   base = root / "images"
   if not stat.S_ISDIR(root.lstat().st_mode):
     raise GuardError(f"Unsafe deploy root: {root}")
