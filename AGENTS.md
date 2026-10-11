@@ -68,3 +68,17 @@ Keep implementation incremental and focused on the current task. Consider establ
 Prefer the simplest design that fits the intended overall architecture. Avoid speculative abstractions, unnecessary generalization, and refactoring unrelated to the task.
 
 The specifications are frozen. Do not silently reinterpret or modify them. If a significant inconsistency or design trade-off is discovered, explain the issue and its implications before making a specification-level decision.
+
+## Repository isolation
+
+The zenn-authoring-tool development repository and Zenn article repositories are independent Git repositories.
+
+Never use the development repository as a converter or checker article repository.
+
+Converter and checker operations must use explicitly identified article repository paths. Never infer these paths from the current working directory.
+
+Automated Git integration tests must use isolated temporary article repositories. Never use production article repositories or their Git metadata for tests.
+
+Manual smoke tests must use a dedicated, non-production article repository.
+
+These boundaries are mandatory regardless of whether a testing skill is invoked.
