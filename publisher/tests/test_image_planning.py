@@ -203,8 +203,38 @@ class ImagePlanningTests(unittest.TestCase):
     self.assertEqual(entry.path, "images/nested/a b\nc.png")
 
   def test_no_additional_filename_constraint(self):
-    self.put(self.root, "a\\b\t.png")
-    self.assertEqual(self.changes()[0].path, "images/a\\b\t.png")
+    self.put(self.root, "a b\t日本語:#?.png")
+    self.assertEqual(self.changes()[0].path, "images/a b\t日本語:#?.png")
+
+  def test_backslash_in_authoring_or_deploy_path_rejected(self):
+    for root in (self.root, self.deploy):
+      for name in ("a\\b.png", "a\\b/nested.png"):
+        with self.subTest(root=root, name=name):
+          path = self.put(root, name)
+          with patch.object(integration, "finalize_publish_plan",
+                            side_effect=AssertionError("Unexpected final plan")) as final:
+            before = snapshot(self.root)
+            with self.assertRaisesRegex(GuardError, "Unsafe.*image path"):
+              integration.plan_publish(self.root, now=NOW)
+            self.assertEqual(snapshot(self.root), before)
+            final.assert_not_called()
+          path.unlink()
+          if path.parent != root / "images":
+            path.parent.rmdir()
+          self.commit(root)
+
+  def test_unchanged_backslash_image_rejected(self):
+    for root in (self.root, self.deploy):
+      self.put(root, "a\\b.png")
+    with patch.object(images, "_mirror_diff", side_effect=AssertionError("Unexpected diff")) as diff:
+      with self.assertRaisesRegex(GuardError, "Unsafe image path"):
+        self.plan()
+      diff.assert_not_called()
+
+  def test_deploy_backslash_empty_directory_rejected(self):
+    (self.deploy / "images/a\\b").mkdir()
+    with self.assertRaisesRegex(GuardError, "Unsafe deploy image path"):
+      self.plan()
 
   def test_ignored_image(self):
     (self.root / ".gitignore").write_text("/_deploy/\n/images/ignored.png\n")
@@ -473,6 +503,18 @@ class ImageModelTests(unittest.TestCase):
   def test_model_sorts_paths(self):
     result = ImagePlanningResult((ImagePlanEntry("DELETE", "images/z.png"), ImagePlanEntry("DELETE", "images/a.png")))
     self.assertEqual(tuple(e.path for e in result.images), ("images/a.png", "images/z.png"))
+
+  def test_all_operations_reject_backslash(self):
+    for operation in ("ADD", "UPDATE", "DELETE"):
+      for path in ("images/a\\b.png", "images/a\\b/nested.png"):
+        with self.subTest(operation=operation, path=path), self.assertRaises(ValueError):
+          ImagePlanEntry(operation, path, None if operation == "DELETE" else b"fixed")
+
+  def test_all_operations_allow_other_unusual_characters(self):
+    for operation in ("ADD", "UPDATE", "DELETE"):
+      path = "images/nested/a b\nc\t日本語:#?.png"
+      self.assertEqual(ImagePlanEntry(operation, path,
+                       None if operation == "DELETE" else b"fixed").path, path)
 
 
 class GitImageEntryTests(unittest.TestCase):

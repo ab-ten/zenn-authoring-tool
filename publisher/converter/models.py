@@ -76,7 +76,7 @@ class ImagePlanEntry:
   def __post_init__(self):
     if self.operation not in ("ADD", "UPDATE", "DELETE"):
       raise ValueError("Unsupported image operation")
-    if (not isinstance(self.path, str) or "\0" in self.path or
+    if (not isinstance(self.path, str) or "\0" in self.path or "\\" in self.path or
         not self.path.startswith("images/") or
         any(part in ("", ".", "..") for part in self.path.split("/")) or
         PurePosixPath(self.path).is_absolute()):

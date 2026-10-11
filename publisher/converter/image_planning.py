@@ -17,7 +17,8 @@ def _safe_image_path(root: Path, path: Path) -> str:
   """親を含めて通常ディレクトリを確認し、画像 tree 外への参照を拒否します。"""
   relative = path.relative_to(root)
   parts = relative.parts
-  if len(parts) < 2 or parts[0] != "images" or any(p in (".", "..") for p in parts):
+  if (len(parts) < 2 or parts[0] != "images" or
+      any(p in (".", "..") or "\\" in p for p in parts)):
     raise GuardError(f"Unsafe image path: {path}")
   for parent in (root, *(root.joinpath(*parts[:i]) for i in range(1, len(parts)))):
     if not stat.S_ISDIR(parent.lstat().st_mode):
@@ -46,6 +47,8 @@ def _read_image(root: Path, path: Path, *, limit: int | None = None) -> bytes:
 def _validate_images(inputs: CheckedInputs) -> dict[str, bytes]:
   entries = head_entries(inputs.authoring_root)
   for path, entry in entries.items():
+    if path.startswith("images/") and "\\" in path:
+      raise GuardError(f"Unsafe image path: {path!r}")
     if (path == "images" or path.startswith("images/")) and entry not in (
         ("100644", "blob"), ("100755", "blob")):
       raise GuardError(f"Image requires normal Git blob: {path!r}")
@@ -64,6 +67,8 @@ def _validate_images(inputs: CheckedInputs) -> dict[str, bytes]:
 
 def _deploy_images(root: Path) -> dict[str, bytes]:
   for path, entry in head_entries(root).items():
+    if path.startswith("images/") and "\\" in path:
+      raise GuardError(f"Unsafe deploy image path: {path!r}")
     if (path == "images" or path.startswith("images/")) and entry not in (
         ("100644", "blob"), ("100755", "blob")):
       raise GuardError(f"Unsafe deploy image Git entry (requires normal blob): {path!r}")
@@ -80,6 +85,8 @@ def _deploy_images(root: Path) -> dict[str, bytes]:
 
   def walk(directory):
     for path in sorted(directory.iterdir()):
+      if "\\" in path.relative_to(root).as_posix():
+        raise GuardError(f"Unsafe deploy image path: {path}")
       mode = path.lstat().st_mode
       if stat.S_ISDIR(mode):
         walk(path)
