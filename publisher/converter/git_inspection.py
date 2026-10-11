@@ -34,7 +34,11 @@ def parse_status(output: bytes) -> tuple[StatusEntry, ...]:
   records = iter(output[:-1].split(b"\0"))
   result = []
   valid = {"??", "!!", "DD", "AU", "UD", "UA", "DU", "AA", "UU"}
-  valid.update(x + y for x in " MTADRC" for y in " MTD" if x + y != "  ")
+  # git-status の XY 表に従い、intent-to-add と worktree rename/copy も許容します。
+  valid.update(" " + y for y in "AMDRC")
+  valid.add("D ")
+  valid.update(x + y for x in "MTARC" for y in " MTD")
+  valid.add(" T")
   for raw in records:
     if len(raw) < 4 or raw[2:3] != b" ":
       raise GuardError("Malformed Git status record")
@@ -138,3 +142,31 @@ def head_paths(root: Path) -> frozenset[str]:
   if output and not output.endswith(b"\0"):
     raise GuardError("Malformed Git HEAD paths")
   return frozenset(_path(raw) for raw in output[:-1].split(b"\0")) if output else frozenset()
+
+
+def parse_index_flags(output: bytes) -> frozenset[str]:
+  """ls-files -v -z から cleanliness を隠す index flags の path を取得します。"""
+  if not output:
+    return frozenset()
+  if not output.endswith(b"\0"):
+    raise GuardError("Malformed Git index flags: missing NUL terminator")
+  flagged = set()
+  for raw in output[:-1].split(b"\0"):
+    if len(raw) < 3 or raw[1:2] != b" " or raw[:1] not in (
+        b"H", b"S", b"M", b"R", b"C", b"K", b"?", b"U",
+        b"h", b"s", b"m", b"r", b"c", b"k", b"u"):
+      raise GuardError("Malformed Git index flag record")
+    path = _path(raw[2:])
+    if raw[:1].islower() or raw[:1] == b"S":
+      flagged.add(path)
+  return frozenset(flagged)
+
+
+def inspect_index_flags(root: Path) -> frozenset[str]:
+  return parse_index_flags(git(root, "ls-files", "-v", "-z"))
+
+
+def head_source(root: Path, path: str) -> str:
+  """検証済み repository-relative path の HEAD content を読み込みます。"""
+  _path(os.fsencode(path))
+  return git(root, "show", "HEAD:" + path).decode("utf-8")

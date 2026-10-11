@@ -6,7 +6,8 @@ import stat
 
 from checker.local_state import read_ledger, safe_path
 from converter.git_inspection import (
-  GuardError, StatusEntry, head_paths, identify_worktrees, inspect_status,
+  GuardError, StatusEntry, head_paths, head_source, identify_worktrees,
+  inspect_index_flags, inspect_status,
 )
 from converter.source_parser import minimal_source_state
 
@@ -27,7 +28,10 @@ class CheckedInputs:
   images: tuple[Path, ...]
 
 
-def validate_deploy(entries: tuple[StatusEntry, ...]) -> None:
+def validate_deploy(entries: tuple[StatusEntry, ...],
+                    flagged: frozenset[str] = frozenset()) -> None:
+  if flagged:
+    raise GuardError(f"Unreliable deploy index flags: {sorted(flagged)!r}")
   if entries:
     raise GuardError("Dirty deploy worktree: " + ", ".join(
       f"{entry.code} {entry.path!r}" +
@@ -36,15 +40,21 @@ def validate_deploy(entries: tuple[StatusEntry, ...]) -> None:
 
 
 def validate_inputs(sources: tuple[tuple[str, str], ...], images: tuple[str, ...],
-                    tracked: frozenset[str], entries: tuple[StatusEntry, ...]) -> None:
+                    tracked: frozenset[str], entries: tuple[StatusEntry, ...],
+                    flagged: frozenset[str] = frozenset()) -> None:
   """取得済み情報だけから publish input の cleanliness を判定します。"""
   dirty = {path for entry in entries for path in (entry.path, entry.original_path)
            if path is not None}
   for path, state in sources:
     if state not in ("active", "erased", "hold"):
       raise GuardError(f"Invalid source state: {path!r}")
+    if state != "hold" and path in flagged:
+      raise GuardError(f"Unreliable source index flags: {path!r}")
     if state != "hold" and (path not in tracked or path in dirty):
       raise GuardError(f"Source must be tracked in HEAD and clean: {path!r}")
+  flagged_images = {path for path in flagged if path.startswith("images/")}
+  if flagged_images:
+    raise GuardError(f"Unreliable image index flags: {sorted(flagged_images)!r}")
   for path in images:
     if path not in tracked or path in dirty:
       raise GuardError(f"Image must be tracked in HEAD and clean: {path!r}")
@@ -77,13 +87,16 @@ def inspect_inputs(article_root: Path) -> CheckedInputs:
   """worktree 検証、cleanliness、pending の順に検査します。
 
   article_root は必須です。CWD への fallback、full parse、planning、書き込みは行いません。
-  削除された Markdown は state を取得できないため、安全側で ERROR とします。
+  欠落した HEAD source は旧 state が hold の場合のみ許容します。
+  rename の identity 確認と ledger 管理記事の欠落検証は後続工程で行います。
   """
   try:
     trees = identify_worktrees(article_root)
-    validate_deploy(inspect_status(trees.deploy))
+    deploy_flags = inspect_index_flags(trees.deploy)
+    validate_deploy(inspect_status(trees.deploy), deploy_flags)
     entries = inspect_status(trees.authoring)
     tracked = head_paths(trees.authoring)
+    flagged = inspect_index_flags(trees.authoring)
     files = _files(trees.authoring, "articles")
     sources = []
     for path in files:
@@ -100,13 +113,20 @@ def inspect_inputs(article_root: Path) -> CheckedInputs:
     missing.update(path for entry in entries for path in (entry.path, entry.original_path)
                    if path and path.startswith("articles/") and path.endswith(".md")
                    and path not in existing)
-    if missing:
-      raise GuardError(f"Missing source state for removed paths: {sorted(missing)!r}")
+    for path in sorted(missing):
+      if path not in tracked:
+        raise GuardError(f"Missing source state for removed path: {path!r}")
+      try:
+        old_state = minimal_source_state(head_source(trees.authoring, path))
+      except (ValueError, UnicodeError) as exc:
+        raise GuardError(f"Invalid HEAD source state for removed path {path!r}: {exc}") from exc
+      if old_state != "hold":
+        raise GuardError(f"Missing source state for removed path: {path!r} ({old_state})")
     images = _files(trees.authoring, "images")
     validate_inputs(tuple((source.path.relative_to(trees.authoring).as_posix(), source.state)
                           for source in sources),
                     tuple(path.relative_to(trees.authoring).as_posix() for path in images),
-                    tracked, entries)
+                    tracked, entries, flagged)
     ledger = read_ledger(trees.deploy)
     if ledger["pending_next_state"]:
       raise GuardError("Unresolved pending_next_state")

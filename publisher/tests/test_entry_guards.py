@@ -10,7 +10,10 @@ import unittest
 from unittest.mock import patch
 
 from converter.entry_guards import inspect_inputs, validate_inputs
-from converter.git_inspection import GuardError, StatusEntry, git, inspect_status, parse_status
+from converter.git_inspection import (
+  GuardError, StatusEntry, git, head_source, inspect_index_flags, inspect_status,
+  parse_index_flags, parse_status,
+)
 from converter.source_parser import minimal_source_state
 
 
@@ -83,6 +86,50 @@ class StatusTests(unittest.TestCase):
     for state in ("active", "erased", "invalid"):
       with self.subTest(state=state), self.assertRaises(GuardError):
         validate_inputs((("a", state),), (), frozenset(), ())
+
+  def test_official_xy_codes_and_intent_to_add(self):
+    codes = {"??", "!!", "DD", "AU", "UD", "UA", "DU", "AA", "UU", "D ", " T"}
+    codes.update(" " + y for y in "AMDRC")
+    codes.update(x + y for x in "MTARC" for y in " MTD")
+    for code in codes:
+      raw = code.encode() + b" a b\nx.md\0"
+      original = None
+      if "R" in code or "C" in code:
+        raw += b"old.md\0"
+        original = "old.md"
+      with self.subTest(code=code):
+        self.assertEqual(parse_status(raw), (StatusEntry(code, "a b\nx.md", original),))
+    for code in ("  ", "DA", "DM", "DR", "MA", "UM", "?M", "m "):
+      with self.subTest(code=code), self.assertRaises(GuardError):
+        parse_status(code.encode() + b" x\0")
+
+  def test_index_flag_fixture(self):
+    self.assertEqual(parse_index_flags(b"H normal\0h a b\nc.md\0S skip\0s both\0M conflict\0"),
+                     frozenset({"a b\nc.md", "skip", "both"}))
+    self.assertEqual(parse_index_flags(b""), frozenset())
+
+  def test_malformed_index_flags(self):
+    for raw in (b"H x", b"H \0", b"Z x\0", b"Hx\0", b"H ../x\0", b"H x\0\0"):
+      with self.subTest(raw=raw), self.assertRaises(GuardError):
+        parse_index_flags(raw)
+
+  def test_index_flags_and_head_commands_are_read_only(self):
+    with patch("converter.git_inspection.git", return_value=b"h a b\nc.md\0") as run:
+      self.assertEqual(inspect_index_flags(Path("/explicit")), frozenset({"a b\nc.md"}))
+      run.assert_called_once_with(Path("/explicit"), "ls-files", "-v", "-z")
+    with patch("converter.git_inspection.git", return_value=source("hold").encode()) as run:
+      self.assertEqual(head_source(Path("/explicit"), "articles/a b\nc.md"), source("hold"))
+      run.assert_called_once_with(Path("/explicit"), "show", "HEAD:articles/a b\nc.md")
+
+  def test_pure_flag_validation_preserves_hold(self):
+    validate_inputs((("articles/a.md", "hold"),), (), frozenset(), (),
+                    frozenset({"articles/a.md", "unrelated"}))
+    for state in ("active", "erased"):
+      with self.subTest(state=state), self.assertRaisesRegex(GuardError, "index flags"):
+        validate_inputs((("articles/a.md", state),), (), frozenset({"articles/a.md"}), (),
+                        frozenset({"articles/a.md"}))
+    with self.assertRaisesRegex(GuardError, "image index flags"):
+      validate_inputs((), (), frozenset(), (), frozenset({"images/missing.png"}))
 
 
 class MinimalStateTests(unittest.TestCase):
@@ -335,3 +382,134 @@ class EntryGuardTests(unittest.TestCase):
     with patch.dict(os.environ, {"GIT_DIR": "/missing", "GIT_WORK_TREE": "/wrong",
                                 "GIT_INDEX_FILE": "/missing/index"}):
       self.check()
+
+
+  def _assert_hidden_index_flags(self, root, path):
+    relative = path.relative_to(root).as_posix()
+    original = path.read_bytes()
+    for flag in ("assume-unchanged", "skip-worktree"):
+      with self.subTest(flag=flag, path=relative):
+        fixture_git(root, "update-index", "--" + flag, "--", relative)
+        path.write_bytes(original + b"hidden change")
+        self.assertEqual(fixture_git(root, "--no-optional-locks", "status", "--porcelain=v1", "-z",
+                                     "--untracked-files=all"), b"")
+        with self.assertRaisesRegex(GuardError, "index flags"):
+          self.check()
+        path.write_bytes(original)
+        fixture_git(root, "update-index", "--no-" + flag, "--", relative)
+
+  def test_hidden_active_source_index_flags(self):
+    self._assert_hidden_index_flags(self.root, self.article)
+
+  def test_hidden_erased_source_index_flags(self):
+    self.article.write_text(source("erased"))
+    fixture_git(self.root, "add", ".")
+    fixture_git(self.root, "commit", "-m", "erased")
+    self._assert_hidden_index_flags(self.root, self.article)
+
+  def test_hidden_image_index_flags(self):
+    self._assert_hidden_index_flags(self.root, self.image)
+
+  def test_hidden_deploy_index_flags_outside_generated_paths(self):
+    path = self.deploy / "unrelated.txt"
+    path.write_text("tracked")
+    fixture_git(self.deploy, "add", ".")
+    fixture_git(self.deploy, "commit", "-m", "unrelated")
+    self._assert_hidden_index_flags(self.deploy, path)
+
+  def test_clean_files_with_index_flags_are_rejected(self):
+    fixture_git(self.root, "update-index", "--assume-unchanged", "articles/source.md")
+    with self.assertRaisesRegex(GuardError, "source index flags"):
+      self.check()
+    fixture_git(self.root, "update-index", "--no-assume-unchanged", "articles/source.md")
+    fixture_git(self.deploy, "update-index", "--skip-worktree", "articles/source.md")
+    with self.assertRaisesRegex(GuardError, "deploy index flags"):
+      self.check()
+
+  def test_hold_and_unrelated_flags_are_allowed(self):
+    self.article.write_text(source("hold"))
+    (self.root / "notes.txt").write_text("notes")
+    fixture_git(self.root, "add", ".")
+    fixture_git(self.root, "commit", "-m", "hold")
+    for flag in ("assume-unchanged", "skip-worktree"):
+      fixture_git(self.root, "update-index", "--" + flag, "articles/source.md", "notes.txt")
+      self.article.write_text(source("hold") + flag)
+      (self.root / "notes.txt").write_text(flag)
+      self.assertEqual(self.check().sources[0].state, "hold")
+      fixture_git(self.root, "update-index", "--no-" + flag, "articles/source.md", "notes.txt")
+
+  def _commit_hold(self):
+    self.article.write_text(source("hold"))
+    fixture_git(self.root, "add", ".")
+    fixture_git(self.root, "commit", "-m", "hold")
+
+  def test_unstaged_hold_rename_with_spaces_newlines(self):
+    self._commit_hold()
+    nested = self.root / "articles" / "nested"
+    nested.mkdir()
+    renamed = self.article.rename(nested / "renamed a b\nc.md")
+    renamed.write_text(source("hold") + "dirty")
+    result = self.check()
+    self.assertEqual(tuple((s.path, s.state) for s in result.sources), ((renamed, "hold"),))
+
+  def test_staged_hold_rename(self):
+    self._commit_hold()
+    renamed = self.article.rename(self.article.with_name("renamed.md"))
+    fixture_git(self.root, "add", "-A")
+    self.assertIn(b"R  ", fixture_git(self.root, "status", "--porcelain=v1", "-z"))
+    self.assertEqual(self.check().sources[0].path, renamed)
+
+  def test_active_and_erased_renames_still_fail(self):
+    for state in ("active", "erased"):
+      self.article.write_text(source(state))
+      fixture_git(self.root, "add", ".")
+      fixture_git(self.root, "commit", "--allow-empty", "-m", state)
+      renamed = self.article.rename(self.article.with_name("renamed.md"))
+      renamed.write_text(source("hold"))
+      with self.assertRaisesRegex(GuardError, "removed path"):
+        self.check()
+      renamed.rename(self.article)
+
+  def test_missing_head_state_still_fails(self):
+    self.article.write_text(source("invalid"))
+    fixture_git(self.root, "add", ".")
+    fixture_git(self.root, "commit", "-m", "invalid")
+    self.article.rename(self.article.with_name("renamed.md")).write_text(source("hold"))
+    with self.assertRaisesRegex(GuardError, "Invalid HEAD source state"):
+      self.check()
+
+  def test_missing_newly_staged_source_still_fails(self):
+    path = self.article.with_name("new.md")
+    path.write_text(source("hold"))
+    fixture_git(self.root, "add", "articles/new.md")
+    path.unlink()
+    with self.assertRaisesRegex(GuardError, "removed path"):
+      self.check()
+
+  def test_intent_to_add_hold_real_git(self):
+    path = self.article.with_name("new.md")
+    path.write_text(source("hold"))
+    fixture_git(self.root, "add", "-N", "articles/new.md")
+    entries = inspect_status(self.root)
+    self.assertIn(StatusEntry(" A", "articles/new.md"), entries)
+    self.assertEqual(len(self.check().sources), 2)
+
+  def test_intent_to_add_active_real_git(self):
+    path = self.article.with_name("new.md")
+    path.write_text(source("active"))
+    fixture_git(self.root, "add", "-N", "articles/new.md")
+    with self.assertRaisesRegex(GuardError, "Source must"):
+      self.check()
+
+  def test_flag_failure_precedes_pending_without_full_parse(self):
+    fixture_git(self.deploy, "update-index", "--assume-unchanged", "articles/source.md")
+    with patch("converter.entry_guards.read_ledger", side_effect=AssertionError("early ledger")), patch(
+        "converter.source_parser.parse_source", side_effect=AssertionError("full parse")), patch(
+        "converter.planning.plan_articles", side_effect=AssertionError("planning")):
+      with self.assertRaisesRegex(GuardError, "deploy index flags"):
+        self.check()
+
+  def test_index_flag_command_failure_is_error(self):
+    with patch("converter.entry_guards.inspect_index_flags", side_effect=GuardError("flags unavailable")):
+      with self.assertRaisesRegex(GuardError, "flags unavailable"):
+        self.check()
