@@ -9,6 +9,8 @@ from unittest.mock import Mock, patch
 
 from checker import discard_all_pendings as workflow
 from checker import cli, terminal_create, terminal_update, terminal_delete, terminal_recreate
+from checker.check_pending import check_pending
+from checker.commit_readiness import CommitReadiness
 from checker.create_observation import ArticleResponse
 from checker.discard_preflight import PreflightResult, LocalValidation
 from checker.errors import LocalApplyError
@@ -76,6 +78,151 @@ class DiscardWorkflowTests(unittest.TestCase):
                'cat-file', 'for-each-ref'}
     self.assertTrue(all(call.args[1] in allowed for call in git.call_args_list))
     self.assert_refused()
+
+  def test_all_pending_recovery_through_host_restore_and_checker(self):
+    confirmed = copy.deepcopy(self.ledger()['articles'])
+    snapshots = snapshot(self.deploy / '.zenn-authoring/released')
+    artifacts = snapshot(self.deploy / 'articles')
+    index = fixture_git(self.deploy, 'ls-files', '--stage', '-z')
+    remote = Mock(side_effect=self.safe_response)
+    no_remote = Mock(side_effect=AssertionError('Empty pending must not issue HTTP'))
+    with patch('checker.zenn_http.urlopen', side_effect=AssertionError('Actual HTTP forbidden')) as http, \
+         patch.object(git_inspection, 'git', wraps=git_inspection.git) as git:
+      outcome = self.discard(remote)
+      self.assertEqual([call.args[0] for call in remote.call_args_list], SLUGS[:4])
+      self.assertEqual(self.ledger()['pending_next_state'], {})
+      self.assertEqual(self.ledger()['articles'], confirmed)
+      self.assertEqual(snapshot(self.deploy / '.zenn-authoring/released'), snapshots)
+      self.assertEqual(snapshot(self.deploy / 'articles'), artifacts)
+      plan = outcome.recovery_plan
+      self.assertEqual(plan.deploy_root, self.deploy)
+      self.assertEqual(plan.expected_head, self.head)
+      self.assertEqual(plan.source_commit, self.parent)
+      self.assertEqual(plan.article_paths, tuple(f'articles/{slug}.md' for slug in SLUGS[:4]))
+      self.assertEqual(plan.restore_argv,
+                       ('git', 'restore', f'--source={self.parent}', '--worktree', '--', *plan.article_paths))
+
+      before_restore = check_pending(self.deploy, no_remote)
+      self.assertEqual(before_restore.readiness.result, CommitReadiness.NOT_READY)
+      self.assertFalse(before_restore.fatal_error)
+      self.assertFalse(before_restore.readiness.fatal_error)
+      self.assertEqual(before_restore.articles, {})
+      self.assertTrue(any('Artifact differs from released snapshot' in detail
+                          for detail in before_restore.readiness.diagnostics))
+      self.assertTrue(any('Missing regular active artifact' in detail
+                          for detail in before_restore.readiness.diagnostics))
+      code, out, err = invoke(['check', '--article-root', str(self.root)])
+      self.assertEqual(code, 1, err)
+      self.assertIn('Global readiness: NOT_READY', out)
+      self.assertIn('Unresolved pending articles: 0', out)
+
+      # host 側の操作を、一時記事 repository の deploy worktree 内だけで再現します。
+      fixture_git(self.deploy, *plan.restore_argv[1:])
+      self.assertFalse(self.artifact(0).exists())
+      self.assertEqual(self.artifact(1).read_bytes(), self.released(1).read_bytes())
+      self.assertEqual(self.artifact(2).read_bytes(), self.released(2).read_bytes())
+      self.assertFalse(self.artifact(3).exists())
+      self.assertEqual(self.ledger()['articles'], confirmed)
+      self.assertEqual(snapshot(self.deploy / '.zenn-authoring/released'), snapshots)
+      self.assertEqual(fixture_git(self.deploy, 'rev-parse', 'HEAD').decode().strip(), self.head)
+      self.assertEqual(fixture_git(self.deploy, 'ls-files', '--stage', '-z'), index)
+      self.assertEqual(fixture_git(self.deploy, 'diff', '--cached'), b'')
+
+      after_restore = check_pending(self.deploy, no_remote)
+      self.assertEqual(after_restore.readiness.result, CommitReadiness.COMMIT_READY)
+      self.assertFalse(after_restore.fatal_error)
+      self.assertFalse(after_restore.readiness.fatal_error)
+      self.assertEqual(after_restore.readiness.diagnostics, ())
+      self.assertEqual(after_restore.articles, {})
+      self.assertEqual(self.ledger()['pending_next_state'], {})
+      code, out, err = invoke(['check', '--article-root', str(self.root)])
+      self.assertEqual(code, 0, err)
+      self.assertIn('Global readiness: COMMIT_READY', out)
+      self.assertIn('Unresolved pending articles: 0', out)
+      self.assertEqual(self.ledger()['articles'], confirmed)
+      self.assertEqual(snapshot(self.deploy / '.zenn-authoring/released'), snapshots)
+      self.assertEqual(fixture_git(self.deploy, 'rev-parse', 'HEAD').decode().strip(), self.head)
+      self.assertEqual(fixture_git(self.deploy, 'ls-files', '--stage', '-z'), index)
+      no_remote.assert_not_called()
+      http.assert_not_called()
+      allowed = {'rev-parse', 'symbolic-ref', 'rev-list', 'ls-tree', 'ls-files', 'status',
+                 'cat-file', 'for-each-ref'}
+      self.assertTrue(all(call.args[1] in allowed for call in git.call_args_list))
+
+  def test_partial_terminal_recovery_preserves_success_and_collision(self):
+    terminal_create.apply_create_success(self.deploy, IDS[0], CURRENT)
+    apply_collision(self.deploy, IDS[3])
+    confirmed = copy.deepcopy(self.ledger()['articles'])
+    snapshots = snapshot(self.deploy / '.zenn-authoring/released')
+    successful_artifact = self.artifact(0).read_bytes()
+    artifacts = snapshot(self.deploy / 'articles')
+    index = fixture_git(self.deploy, 'ls-files', '--stage', '-z')
+    self.assertNotIn(IDS[0], self.ledger()['pending_next_state'])
+    self.assertNotIn(IDS[3], self.ledger()['pending_next_state'])
+    self.assertFalse(self.artifact(3).exists())
+    remote = Mock(side_effect=self.safe_response)
+    no_remote = Mock(side_effect=AssertionError('Empty pending must not issue HTTP'))
+    with patch('checker.zenn_http.urlopen', side_effect=AssertionError('Actual HTTP forbidden')) as http, \
+         patch.object(git_inspection, 'git', wraps=git_inspection.git) as git:
+      outcome = self.discard(remote)
+      self.assertEqual([call.args[0] for call in remote.call_args_list], SLUGS[1:3])
+      self.assertEqual(self.ledger()['pending_next_state'], {})
+      self.assertEqual(self.ledger()['articles'], confirmed)
+      self.assertEqual(snapshot(self.deploy / '.zenn-authoring/released'), snapshots)
+      self.assertEqual(snapshot(self.deploy / 'articles'), artifacts)
+      plan = outcome.recovery_plan
+      self.assertEqual(plan.source_commit, self.parent)
+      self.assertEqual(plan.article_paths, tuple(f'articles/{slug}.md' for slug in SLUGS[1:3]))
+      self.assertEqual(plan.restore_argv,
+                       ('git', 'restore', f'--source={self.parent}', '--worktree', '--', *plan.article_paths))
+
+      before_restore = check_pending(self.deploy, no_remote)
+      self.assertEqual(before_restore.readiness.result, CommitReadiness.NOT_READY)
+      self.assertFalse(before_restore.fatal_error)
+      self.assertFalse(before_restore.readiness.fatal_error)
+      self.assertEqual(before_restore.articles, {})
+      self.assertTrue(any('Artifact differs from released snapshot' in detail
+                          for detail in before_restore.readiness.diagnostics))
+      code, out, err = invoke(['check', '--article-root', str(self.root)])
+      self.assertEqual(code, 1, err)
+      self.assertIn('Global readiness: NOT_READY', out)
+      self.assertIn('Unresolved pending articles: 0', out)
+
+      # 成功済み CREATE と cleanup 済み RECREATE を restore 対象に含めません。
+      fixture_git(self.deploy, *plan.restore_argv[1:])
+      self.assertEqual(self.artifact(1).read_bytes(), self.released(1).read_bytes())
+      self.assertEqual(self.artifact(2).read_bytes(), self.released(2).read_bytes())
+      self.assertEqual(self.artifact(0).read_bytes(), successful_artifact)
+      self.assertEqual(self.released(0).read_bytes(), successful_artifact)
+      self.assertFalse(self.artifact(3).exists())
+      self.assertEqual(self.ledger()['articles'], confirmed)
+      self.assertEqual(snapshot(self.deploy / '.zenn-authoring/released'), snapshots)
+      self.assertEqual(fixture_git(self.deploy, 'rev-parse', 'HEAD').decode().strip(), self.head)
+      self.assertEqual(fixture_git(self.deploy, 'ls-files', '--stage', '-z'), index)
+      self.assertEqual(fixture_git(self.deploy, 'diff', '--cached'), b'')
+
+      after_restore = check_pending(self.deploy, no_remote)
+      self.assertEqual(after_restore.readiness.result, CommitReadiness.COMMIT_READY)
+      self.assertFalse(after_restore.fatal_error)
+      self.assertFalse(after_restore.readiness.fatal_error)
+      self.assertEqual(after_restore.readiness.diagnostics, ())
+      self.assertEqual(after_restore.articles, {})
+      self.assertEqual(self.ledger()['pending_next_state'], {})
+      code, out, err = invoke(['check', '--article-root', str(self.root)])
+      self.assertEqual(code, 0, err)
+      self.assertIn('Global readiness: COMMIT_READY', out)
+      self.assertIn('Unresolved pending articles: 0', out)
+      self.assertEqual(self.ledger()['articles'], confirmed)
+      self.assertEqual(snapshot(self.deploy / '.zenn-authoring/released'), snapshots)
+      self.assertEqual(self.artifact(0).read_bytes(), successful_artifact)
+      self.assertFalse(self.artifact(3).exists())
+      self.assertEqual(fixture_git(self.deploy, 'rev-parse', 'HEAD').decode().strip(), self.head)
+      self.assertEqual(fixture_git(self.deploy, 'ls-files', '--stage', '-z'), index)
+      no_remote.assert_not_called()
+      http.assert_not_called()
+      allowed = {'rev-parse', 'symbolic-ref', 'rev-list', 'ls-tree', 'ls-files', 'status',
+                 'cat-file', 'for-each-ref'}
+      self.assertTrue(all(call.args[1] in allowed for call in git.call_args_list))
 
   def test_all_confirmations_require_literal_true_before_inspection(self):
     for name in ('confirmed_deploy_terminal', 'confirmed_remote_safe', 'confirmed_abandon_all'):
