@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from checker.check_pending import check_pending
+from checker.confirm_pending_update import confirm_pending_update
 from checker.commit_readiness import CommitReadiness
 from checker.create_observation import CreateResult, load_configured_user_id
 from checker.initialization import initialize
@@ -38,6 +39,19 @@ def _parser() -> argparse.ArgumentParser:
   init.add_argument("username", metavar="USERNAME", help="初期化する Zenn username")
   init.add_argument("--article-root", required=True, type=_article_root, metavar="PATH",
                     help="記事 repository の authoring worktree root（必須）")
+  confirm = commands.add_parser(
+    "confirm-pending-update", allow_abbrev=False,
+    help="ユーザーの明示的確認により PENDING UPDATE を手動確定します。",
+    description="通常 check より強いユーザー責任を伴います。Dashboard の deploy 成功完了と、"
+                "現在の remote content と deploy artifact の一致をユーザー自身が検証してください。"
+                "Checker はこれらを検証しません。")
+  confirm.add_argument("article_id", metavar="ARTICLE_ID", help="対象 pending UPDATE の UUID")
+  confirm.add_argument("--article-root", required=True, type=_article_root, metavar="PATH",
+                       help="記事 repository の authoring worktree root（必須）")
+  confirm.add_argument("--confirmed-deploy-success", action="store_true", required=True,
+                       help="ユーザーが Dashboard で対象 deploy の成功完了を確認済み（必須）")
+  confirm.add_argument("--confirmed-content-match", action="store_true", required=True,
+                       help="ユーザーが現在の remote content と deploy artifact の一致を確認済み（必須）")
   return parser
 
 
@@ -83,16 +97,41 @@ def _recovery() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-  """引数を解析して init または一回の check を実行し、終了コードを返します。
+  """引数を解析して init、check または手動 UPDATE 確定を実行します。
 
   記事 root は必須です。init/check の成功は 0、check の NOT_READY は 1、
+  手動 UPDATE 確定の成功は readiness を確定せず 0、
   判定不能な失敗は 2、中断は 130 を返します。help と引数エラーは SystemExit を送出します。
   """
   started = False
+  args = None
   try:
-    args = _parser().parse_args(argv)
+    raw_args = sys.argv[1:] if argv is None else argv
+    try:
+      args = _parser().parse_args(raw_args)
+    except SystemExit as exc:
+      if exc.code == ExitCode.ERROR and raw_args and raw_args[0] == "confirm-pending-update":
+        print("通常 check より強いユーザー責任を伴います。Dashboard の対象 deploy 成功完了と"
+              "現在の remote content と deploy artifact の一致をユーザー自身が検証し、"
+              "両確認オプションを明示してください。Checker はこれらを検証しません。", file=sys.stderr)
+      raise
     if args.command == "init":
       return _init(args)
+    if args.command == "confirm-pending-update":
+      started = True
+      release = confirm_pending_update(
+        args.article_root, args.article_id,
+        confirmed_deploy_success=args.confirmed_deploy_success,
+        confirmed_content_match=args.confirmed_content_match)
+      print(f"article {args.article_id}: Pending UPDATE をユーザー確認に基づく手動 SUCCESS として確定しました。")
+      print(f"Successful release を {release} に更新し、対象 Pending を解消しました。"
+            "Released snapshot を deploy artifact の内容に更新しました。")
+      print("Dashboard 成功と remote content equality はユーザーによる確認です。"
+            "Checker 自身が検証したものではありません。")
+      print("この操作の成功・終了コード 0 は COMMIT_READY を保証しません。")
+      print(f"通常 check の再実行が必要です: python -m checker check --article-root {str(args.article_root)!r}")
+      print("通常 check が COMMIT_READY と判定した場合のみ、管理差分を確認して [skip ci] commit / push できます。")
+      return ExitCode.READY
     worktrees = identify_worktrees(args.article_root)
     # pending がない場合にも初期化済みの owner 設定を要求します。
     load_configured_user_id(worktrees.deploy)
@@ -142,5 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     code = ExitCode.ERROR
   if started:
     print("terminal apply によりローカル管理状態が部分変更されている可能性があります。", file=sys.stderr)
+  if args is not None and args.command == "confirm-pending-update":
+    print("通常 check より強いユーザー責任を伴います。再実行時も Dashboard の対象 deploy 成功完了と"
+          "現在の remote content と deploy artifact の一致をユーザー自身が確認してください。"
+          "Checker はこれらを検証しません。", file=sys.stderr)
+    print(f"原因・管理状態を確認後、通常 check を再実行してください: "
+          f"python -m checker check --article-root {str(args.article_root)!r}", file=sys.stderr)
   _recovery()
   return code
