@@ -19,16 +19,18 @@ class CommitReadiness(StrEnum):
 
 @dataclass(frozen=True)
 class ReadinessResult:
-  """判定と、不整合または未解決状態の診断を保持します。"""
+  """判定と診断を保持します。fatal_error は判定不能な失敗を示します。"""
 
   result: CommitReadiness
   diagnostics: tuple[str, ...] = ()
+  fatal_error: bool = False
 
 
 def check_commit_readiness(deploy_root: Path) -> ReadinessResult:
   """pending が空の場合に全 confirmed article と artifact を検証します。"""
   root = Path(deploy_root)
   diagnostics = []
+  fatal_error = False
   try:
     ledger = read_ledger(root)
     if ledger["pending_next_state"]:
@@ -36,10 +38,11 @@ def check_commit_readiness(deploy_root: Path) -> ReadinessResult:
         f"Unresolved pending articles: {len(ledger['pending_next_state'])}",))
     articles_dir = safe_path(root, "articles")
     if not articles_dir.is_dir():
-      raise LocalApplyError("Missing articles directory")
+      diagnostics.append("Missing articles directory")
     active_names = set()
     slugs = set()
     for article_id, entry in ledger["articles"].items():
+      validated = False
       try:
         _validate_article_id(article_id)
         if not isinstance(entry, dict):
@@ -56,6 +59,7 @@ def check_commit_readiness(deploy_root: Path) -> ReadinessResult:
         if type(release) is not int or release < 1:
           raise LocalApplyError("Invalid successful release")
         _validate_observation(entry.get("successful_zenn_observation"))
+        validated = True
         snapshot = safe_path(root, ".zenn-authoring", "released", f"{article_id}.md")
         if not snapshot.is_file():
           raise LocalApplyError("Missing regular released snapshot")
@@ -69,6 +73,8 @@ def check_commit_readiness(deploy_root: Path) -> ReadinessResult:
         elif artifact.exists():
           raise LocalApplyError("Erased article artifact still exists")
       except (OSError, ValueError, TypeError) as exc:
+        if not validated or isinstance(exc, OSError):
+          fatal_error = True
         diagnostics.append(f"{article_id}: {exc}")
     for artifact in articles_dir.rglob("*"):
       if artifact.suffix == ".md" and (
@@ -77,9 +83,11 @@ def check_commit_readiness(deploy_root: Path) -> ReadinessResult:
       try:
         safe_path(root, *artifact.relative_to(root).parts)
       except (OSError, ValueError) as exc:
+        fatal_error = True
         diagnostics.append(str(exc))
   except (OSError, ValueError, TypeError) as exc:
+    fatal_error = True
     diagnostics.append(str(exc))
   return ReadinessResult(
     CommitReadiness.NOT_READY if diagnostics else CommitReadiness.COMMIT_READY,
-    tuple(diagnostics))
+    tuple(diagnostics), fatal_error=fatal_error)

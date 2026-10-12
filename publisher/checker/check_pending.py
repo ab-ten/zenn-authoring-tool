@@ -25,11 +25,12 @@ from checker.zenn_http import fetch_article as http_fetch_article
 
 @dataclass(frozen=True)
 class CheckResult:
-  """記事別の最終結果、readiness、全体の診断を返します。"""
+  """記事別結果と readiness を返します。fatal_error は全体の判定不能を示します。"""
 
   articles: dict[str, CreateObservation]
   readiness: ReadinessResult
   diagnostics: tuple[str, ...] = ()
+  fatal_error: bool = False
 
 
 def check_pending_creates(
@@ -109,9 +110,11 @@ def _check_pending(deploy_root: Path,
     if ledger is not None:
       results = {article_id: CreateObservation(CreateResult.ERROR, detail=str(exc))
                  for article_id in ledger["pending_next_state"]}
-    return CheckResult(results, check_commit_readiness(root), (str(exc),))
+    return CheckResult(results, check_commit_readiness(root), (str(exc),), fatal_error=True)
 
+  fatal_error = False
   for article_id in pending_map:
+    validated = False
     try:
       _validate_article_id(article_id)
       entry = pending_map[article_id]
@@ -121,6 +124,7 @@ def _check_pending(deploy_root: Path,
       if not isinstance(operation, str) or operation not in validators:
         raise LocalApplyError("Unsupported or invalid pending operation")
       pending = validators[operation](ledger, article_id)
+      validated = True
       response = fetch_article(pending["slug"])
       if not isinstance(response, ArticleResponse):
         raise ValueError("Invalid transport response")
@@ -132,13 +136,16 @@ def _check_pending(deploy_root: Path,
                        "RECREATE": classify_recreate_response}
         results[article_id] = classifiers[operation](response, pending, owner_id)
     except (OSError, ValueError, TypeError) as exc:
+      # 不正な管理状態と通常の観測失敗を発生工程で区別します。
+      if not validated:
+        fatal_error = True
       results[article_id] = CreateObservation(CreateResult.ERROR, detail=str(exc))
 
   try:
     if safe_path(root, ".zenn-authoring", "ledger.json").read_bytes() != before:
       raise LocalApplyError("Ledger changed during observation; local apply refused")
   except (OSError, ValueError) as exc:
-    return CheckResult(results, check_commit_readiness(root), (str(exc),))
+    return CheckResult(results, check_commit_readiness(root), (str(exc),), fatal_error=True)
 
   for article_id, result in results.items():
     if result.result not in (CreateResult.SUCCESS, CreateResult.COLLISION):
@@ -161,4 +168,4 @@ def _check_pending(deploy_root: Path,
     except (OSError, ValueError, TypeError) as exc:
       results[article_id] = CreateObservation(CreateResult.ERROR,
                                             detail=f"Local apply failed: {exc}")
-  return CheckResult(results, check_commit_readiness(root))
+  return CheckResult(results, check_commit_readiness(root), fatal_error=fatal_error)
