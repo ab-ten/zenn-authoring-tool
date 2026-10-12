@@ -7,6 +7,7 @@ import sys
 
 from checker.check_pending import check_pending
 from checker.confirm_pending_update import confirm_pending_update
+from checker.discard_all_pendings import discard_all_pendings
 from checker.commit_readiness import CommitReadiness
 from checker.create_observation import CreateResult, load_configured_user_id
 from checker.initialization import initialize
@@ -52,6 +53,18 @@ def _parser() -> argparse.ArgumentParser:
                        help="ユーザーが Dashboard で対象 deploy の成功完了を確認済み（必須）")
   confirm.add_argument("--confirmed-content-match", action="store_true", required=True,
                        help="ユーザーが現在の remote content と deploy artifact の一致を確認済み（必須）")
+  discard = commands.add_parser(
+    "discard-all-pendings", allow_abbrev=False, help="全 unresolved pending をローカルで破棄します。",
+    description="全 pending を破棄し、host 側の復旧手順を表示します。Article API observation は"
+                "deploy terminal の証明ではありません。Git restore は実行しません。")
+  discard.add_argument("--article-root", required=True, type=_article_root, metavar="PATH",
+                       help="記事 repository の authoring worktree root（必須）")
+  discard.add_argument("--confirmed-deploy-terminal", action="store_true", required=True,
+                       help="Dashboard 等で対象 deploy が terminal で後から適用されないことを確認済み（必須）")
+  discard.add_argument("--confirmed-remote-safe", action="store_true", required=True,
+                       help="全 pending の operation 別 remote 整合性を確認済み（必須）")
+  discard.add_argument("--confirmed-abandon-all", action="store_true", required=True,
+                       help="全 unresolved pending の一括破棄を明示的に決定済み（必須）")
   return parser
 
 
@@ -97,10 +110,10 @@ def _recovery() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-  """引数を解析して init、check または手動 UPDATE 確定を実行します。
+  """引数を解析して init、check、手動 UPDATE 確定または全 pending 破棄を実行します。
 
   記事 root は必須です。init/check の成功は 0、check の NOT_READY は 1、
-  手動 UPDATE 確定の成功は readiness を確定せず 0、
+  手動 UPDATE 確定と全 pending 破棄の成功は readiness を確定せず 0、
   判定不能な失敗は 2、中断は 130 を返します。help と引数エラーは SystemExit を送出します。
   """
   started = False
@@ -110,6 +123,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
       args = _parser().parse_args(raw_args)
     except SystemExit as exc:
+      if exc.code == ExitCode.ERROR and raw_args and raw_args[0] == "discard-all-pendings":
+        print("Dashboard 等で対象 deploy が terminal で後から適用されないこと、全 pending の"
+              "operation 別 remote 整合性、全 pending の一括破棄をそれぞれ確認し、"
+              "3つの confirmation flag を明示してください。Article API は terminal の証明ではありません。",
+              file=sys.stderr)
       if exc.code == ExitCode.ERROR and raw_args and raw_args[0] == "confirm-pending-update":
         print("通常 check より強いユーザー責任を伴います。Dashboard の対象 deploy 成功完了と"
               "現在の remote content と deploy artifact の一致をユーザー自身が検証し、"
@@ -117,6 +135,24 @@ def main(argv: list[str] | None = None) -> int:
       raise
     if args.command == "init":
       return _init(args)
+    if args.command == "discard-all-pendings":
+      started = True
+      outcome = discard_all_pendings(
+        args.article_root, confirmed_deploy_terminal=args.confirmed_deploy_terminal,
+        confirmed_remote_safe=args.confirmed_remote_safe,
+        confirmed_abandon_all=args.confirmed_abandon_all)
+      print("PENDING_CLEARED: all unresolved pending transitions were discarded locally.")
+      print("RESTORE_REQUIRED: article rollback has not been performed.")
+      print("host 側の deploy worktree で次のコマンドを実行してください。Checker は実行しません。")
+      print(" ".join(outcome.recovery_plan.restore_argv))
+      print("復旧対象は残っていた pending の記事のみです。既に成功済みの記事は一括 rollback しないでください。")
+      print("git status と git diff を確認し、必要な cleanup を完了してください。")
+      print(f"通常 check を実行してください: python -m checker check --article-root {str(args.article_root)!r}")
+      print("通常 check が COMMIT_READY の場合のみ [skip ci] commit を行い、deploy branch を push してください。"
+            "NOT_READY の場合は commit / push 禁止です。終了コード 0 は復旧完了を保証しません。")
+      print("clear 後 restore 前に中断した場合、pending が空なら discard を再実行せず、"
+            "既存 Git 履歴・ledger・記事状態を調査して手動復旧してください。")
+      return ExitCode.READY
     if args.command == "confirm-pending-update":
       started = True
       release = confirm_pending_update(
@@ -179,6 +215,12 @@ def main(argv: list[str] | None = None) -> int:
     # 未知の例外の内容には private な情報が含まれる可能性があります。
     print(f"ERROR: {type(exc).__name__}: Checker の処理を完了できません。", file=sys.stderr)
     code = ExitCode.ERROR
+  if args is not None and args.command == "discard-all-pendings":
+    print("pending が既に削除されている可能性があります。成功を推定せず、host の deploy worktree で"
+          "ledger、Git status / diff、既存 Git 履歴と記事状態を検査し、手動復旧してください。"
+          "pending が空なら discard を再実行しないでください。復旧確認前の commit / push は禁止です。",
+          file=sys.stderr)
+    return code
   if started:
     print("terminal apply によりローカル管理状態が部分変更されている可能性があります。", file=sys.stderr)
   if args is not None and args.command == "confirm-pending-update":
