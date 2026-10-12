@@ -8,6 +8,7 @@ import sys
 from checker.check_pending import check_pending
 from checker.commit_readiness import CommitReadiness
 from checker.create_observation import CreateResult, load_configured_user_id
+from checker.initialization import initialize
 from checker.local_state import read_ledger
 from converter.git_inspection import GuardError, identify_worktrees
 
@@ -33,7 +34,45 @@ def _parser() -> argparse.ArgumentParser:
   check = commands.add_parser("check", allow_abbrev=False, help="公開結果と commit readiness を確認します。")
   check.add_argument("--article-root", required=True, type=_article_root, metavar="PATH",
                      help="記事 repository の authoring worktree root（必須）")
+  init = commands.add_parser("init", allow_abbrev=False, help="Zenn owner と初期管理状態を設定します。")
+  init.add_argument("username", metavar="USERNAME", help="初期化する Zenn username")
+  init.add_argument("--article-root", required=True, type=_article_root, metavar="PATH",
+                    help="記事 repository の authoring worktree root（必須）")
   return parser
+
+
+def _init(args: argparse.Namespace) -> int:
+  """初期化結果と host 側の完了手順を表示します。失敗時は管理状態を保持します。"""
+  try:
+    outcome = initialize(args.article_root, args.username)
+    if outcome.changed:
+      print(f"初期管理状態を作成しました。Zenn user ID: {outcome.user.id}")
+      print("Git commit は未実行です。ホストで deploy worktree の Git status と差分を確認し、"
+            "config.json と ledger.json を stage して内容を確認してください。\n"
+            "初回 commit message: Initialize Zenn management state [skip ci]\n"
+            "初回 commit 後に deploy branch を push し、deploy worktree が clean になってから"
+            "通常 workflow を開始してください。")
+    else:
+      print(f"ALREADY_INITIALIZED: 同一 Zenn user ID {outcome.user.id} のため no-op です。"
+            "管理ファイルは変更していません。")
+    print("初期化は Zenn deployment 成功の確認ではありません。")
+    return ExitCode.READY
+  except KeyboardInterrupt:
+    print("INTERRUPTED: 初期化を中断しました。", file=sys.stderr)
+    code = ExitCode.INTERRUPTED
+  except (OSError, ValueError, TypeError) as exc:
+    print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+    code = ExitCode.ERROR
+  except Exception as exc:
+    print(f"ERROR: {type(exc).__name__}: 初期化を完了できません。", file=sys.stderr)
+    code = ExitCode.ERROR
+  print("管理ファイルの部分変更が残っている可能性があります。ホストで deploy worktree の"
+        "Git status、staged/unstaged diff、untracked paths、ledger.json と config.json を確認してください。"
+        "不完全な状態を commit/push しないでください。\n"
+        "config 不在で canonical empty ledger のみが残った場合は init を再実行できます。"
+        "既存の管理ファイルが欠落・破損している場合は、Git からの復旧を手動で行ってください。",
+        file=sys.stderr)
+  return code
 
 
 def _recovery() -> None:
@@ -44,10 +83,16 @@ def _recovery() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-  """既存 unified Checker を一度だけ実行し、構造化情報から終了コードを返します。"""
+  """引数を解析して init または一回の check を実行し、終了コードを返します。
+
+  記事 root は必須です。init/check の成功は 0、check の NOT_READY は 1、
+  判定不能な失敗は 2、中断は 130 を返します。help と引数エラーは SystemExit を送出します。
+  """
   started = False
   try:
     args = _parser().parse_args(argv)
+    if args.command == "init":
+      return _init(args)
     worktrees = identify_worktrees(args.article_root)
     # pending がない場合にも初期化済みの owner 設定を要求します。
     load_configured_user_id(worktrees.deploy)

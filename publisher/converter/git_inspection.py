@@ -9,6 +9,10 @@ import subprocess
 class GuardError(ValueError):
   """Converter entry guard の ERROR を表します。"""
 
+  def __init__(self, message: str, *, returncode: int | None = None):
+    super().__init__(message)
+    self.returncode = returncode
+
 
 @dataclass(frozen=True)
 class StatusEntry:
@@ -70,7 +74,8 @@ def git(root: Path, *args: str) -> bytes:
   except OSError as exc:
     raise GuardError(f"Git execution failed at {root}: {exc}") from exc
   if result.returncode:
-    raise GuardError(f"Git failed at {root} ({args[0]}): {os.fsdecode(result.stderr)!r}")
+    raise GuardError(f"Git failed at {root} ({args[0]}): {os.fsdecode(result.stderr)!r}",
+                     returncode=result.returncode)
   return result.stdout
 
 
@@ -87,8 +92,13 @@ class Worktrees:
   deploy: Path
 
 
-def identify_worktrees(article_root: Path) -> Worktrees:
-  """branch、共通 metadata、相互リンク、相対リンクを検証します。"""
+def identify_worktrees(article_root: Path, *, allow_unborn_deploy: bool = False) -> Worktrees:
+  """明示した記事 root の branch、metadata、相対リンクを読み取り専用で検証します。
+
+  通常は両 worktree の HEAD commit を要求します。init 用オプションでは、
+  refs/heads/deploy の不存在を Git が確認した場合のみ unborn を許容します。
+  検証済み Worktrees を返し、不正な状態や Git 実行失敗では GuardError を送出します。
+  """
   if article_root is None:
     raise GuardError("Explicit article repository root is required")
   root = Path(article_root).absolute()
@@ -111,7 +121,17 @@ def identify_worktrees(article_root: Path) -> Worktrees:
       raise GuardError(f"Incorrect worktree branch: {target}")
     common = Path(_line(target, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
     metadata = Path(_line(target, "rev-parse", "--absolute-git-dir")).resolve()
-    git(target, "rev-parse", "--verify", "HEAD^{commit}")
+    unborn = False
+    if target == deploy and allow_unborn_deploy:
+      try:
+        git(target, "show-ref", "--exists", "refs/heads/deploy")
+      except GuardError as exc:
+        # --exists の 2 は不存在、1 やその他の終了コードは検証失敗です。
+        if exc.returncode != 2:
+          raise
+        unborn = True
+    if not unborn:
+      git(target, "rev-parse", "--verify", "HEAD^{commit}")
     identities.append((common, metadata))
   common, authoring_git = identities[0]
   deploy_common, deploy_git = identities[1]
