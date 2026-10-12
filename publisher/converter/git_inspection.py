@@ -216,3 +216,78 @@ def head_source(root: Path, path: str) -> str:
   """検証済み repository-relative path の HEAD content を読み込みます。"""
   _path(os.fsencode(path))
   return git(root, "show", "HEAD:" + path).decode("utf-8")
+
+
+def commit_and_parent(root: Path) -> tuple[str, str]:
+  """HEAD と唯一の parent commit を検証して取得します。"""
+  head = _line(root, "rev-parse", "--verify", "HEAD^{commit}")
+  def valid(value):
+    return len(value) in (40, 64) and all(c in "0123456789abcdef" for c in value)
+  if not valid(head):
+    raise GuardError("Malformed HEAD commit ID")
+  fields = _line(root, "rev-list", "--parents", "-n", "1", head).split(" ")
+  if len(fields) != 2 or fields[0] != head or not valid(fields[1]):
+    raise GuardError("HEAD requires exactly one parent; root/merge commits refused")
+  parent = _line(root, "rev-parse", "--verify", fields[1] + "^{commit}")
+  if parent != fields[1]:
+    raise GuardError("Invalid parent commit")
+  return head, parent
+
+
+def commit_tree(root: Path, commit: str) -> dict[str, tuple[str, str]]:
+  """commit tree の regular blob path と object ID を取得します。"""
+  if len(commit) not in (40, 64) or any(c not in "0123456789abcdef" for c in commit):
+    raise GuardError("Invalid commit ID")
+  output = git(root, "ls-tree", "-r", "-z", commit)
+  if output and not output.endswith(b"\0"):
+    raise GuardError("Malformed commit tree")
+  result = {}
+  verified_objects = set()
+  for raw in output[:-1].split(b"\0") if output else ():
+    header, separator, name = raw.partition(b"\t")
+    fields = header.split(b" ")
+    if not separator or len(fields) != 3:
+      raise GuardError("Malformed commit tree entry")
+    mode, kind, oid = fields
+    if (mode not in (b"100644", b"100755") or kind != b"blob" or
+        len(oid) not in (40, 64) or any(c not in b"0123456789abcdef" for c in oid)):
+      raise GuardError("Unsafe or malformed commit tree entry")
+    path = _path(name)
+    if "\\" in path or path in result:
+      raise GuardError("Unsafe or duplicate commit tree path")
+    if oid not in verified_objects:
+      if git(root, "cat-file", "-e", oid.decode("ascii") + "^{blob}"):
+        raise GuardError("Malformed blob existence output")
+      verified_objects.add(oid)
+    result[path] = (mode.decode("ascii"), oid.decode("ascii"))
+  return result
+
+
+def read_tree_blob(root: Path, tree: dict[str, tuple[str, str]], path: str) -> bytes:
+  """取得済み tree の blob を読み込み、欠落 object を拒否します。"""
+  _path(os.fsencode(path))
+  if path not in tree:
+    raise GuardError(f"Missing tree blob: {path}")
+  return git(root, "cat-file", "blob", tree[path][1])
+
+
+def inspect_history_metadata(root: Path) -> None:
+  """履歴の代替や進行中の Git 操作を検出し、通常の commit 解釈を要求します。"""
+  from checker.local_state import safe_path
+
+  metadata = Path(_line(root, "rev-parse", "--absolute-git-dir"))
+  common = Path(_line(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+  for base in (metadata, common):
+    safe_path(base)
+    for name in ("index", "HEAD", "gitdir", "commondir"):
+      path = safe_path(base, name)
+      if path.exists() and not path.is_file():
+        raise GuardError(f"Invalid Git metadata file: {path}")
+    for name in ("index.lock", "HEAD.lock", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+                 "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer"):
+      path = safe_path(base, name)
+      if path.exists():
+        raise GuardError(f"Git operation in progress: {name}")
+  grafts = safe_path(common, "info", "grafts")
+  if grafts.exists() or git(root, "for-each-ref", "--format=%(refname)", "refs/replace"):
+    raise GuardError("Alternate Git history (grafts/replace refs) refused")
