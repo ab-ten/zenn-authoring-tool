@@ -43,13 +43,13 @@ At startup:
 
 1. Scan `/authoring/articles` recursively for regular `.md` files. Symlinks and special filesystem objects anywhere under `articles` are rejected.
 2. Read only the management comment block immediately following Zenn Front Matter. Ignore `.md` files without an `#id` in that block; do not inspect management-looking text in the article body.
-3. Validate and normalize the UUID. For each managed Markdown file, map `#slug` to `/preview/articles/<slug>.md`, or generate `new-<normalized-uuid>` when no slug is declared. Existing `#state` must be active, erased, or hold. Duplicate IDs, duplicate preview slugs, and malformed managed metadata are errors.
+3. Extract **only** `#id` and `#slug`, ignoring `#state`, `#release`, `#observation-override`, and all unknown management fields (including repeated or not-yet-validated forms). Normalize the UUID and map `#slug` to `/preview/articles/<slug>.md`, or generate `new-<normalized-uuid>` when absent. Invalid/duplicate `#id` or `#slug`, duplicate normalized IDs, and duplicate preview slugs are errors. Publisher is responsible for broader management metadata validation.
 4. Finish all source validation **before** switching the generated `/preview/articles` link directory. Never delete arbitrary user files from `/preview/articles`; pre-existing unmanaged objects cause an error.
 5. Ensure `/preview/images` is a symlink to `/authoring/images` (the source images directory must exist, even if empty).
-6. Only after link generation succeeds, launch `zenn preview --host 0.0.0.0 --no-watch`.
+6. On success, print the installed article/image symlink targets (`PREVIEW_LINK`) and total (`PREVIEW_LINKS_READY`), then launch `zenn preview --host 0.0.0.0 --no-watch`.
 
 A failed validation exits nonzero without launching Zenn CLI. The source articles and images, deploy tree, ledger, and released snapshots are never written to by link generation. Only `/preview` is modified.
 
-The metadata extractor is deliberately smaller than Converter's `source_parser.py`. It **does not** validate YAML content, release progression, observation overrides, or publish eligibility. Zenn CLI performs its own Front Matter parsing; Converter owns publication-specific validation. Keep the preview extractor's management-block grammar and UUID/slug interpretation aligned with the frozen specification and Converter tests.
+The metadata extractor is deliberately smaller than Converter's `source_parser.py`. It **does not** validate YAML content, release progression, observation overrides, or publish eligibility. Zenn CLI performs its own Front Matter parsing; Converter owns publication-specific validation. Keep the preview extractor's leading-block location and UUID/slug interpretation aligned with the frozen specification. New publisher-only management fields require no previewer changes. Dirty authoring sources are supported; publication validation remains separate (a future publisher `lint` command).
 
 **MVP limits:** Single preview writer; no file watcher/polling; no concurrent source tree rename during link generation. This packaging does not implement Windows/Docker Desktop end-to-end testing, image-only publishing, or preview lifecycle automation beyond re-running the entrypoint at startup.

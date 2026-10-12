@@ -5,8 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SLUG = /^[a-z0-9_-]{12,50}$/;
-const META_START = /^<!--\s*#(?:(?:id|slug|state|release|observation-override)\b|[A-Za-z][\w-]*\s*:)/;
-const META_VALUE = /^<!--\s*#(id|slug|state|release|observation-override):([\s\S]*?)\s*-->$/;
+const META_KEY = /^<!--\s*#([A-Za-z][\w-]*)/;
+const PREVIEW_VALUE = /^<!--\s*#(id|slug):([\s\S]*?)\s*-->$/;
 const DECODER = new TextDecoder('utf-8', { fatal: true });
 
 /** Normalize the UUID notation accepted by Python uuid.UUID to lowercase hyphenated form. */
@@ -20,9 +20,10 @@ export function normalizeArticleId(value) {
 }
 
 /**
- * Extract only leading management metadata. Return null for a Markdown file without #id.
- * This intentionally does not validate Zenn Front Matter semantics or release transitions;
- * those remain Zenn CLI / Converter responsibilities. An invalid managed source fails closed.
+ * Extract #id and #slug from the leading management-comment region only.
+ * Other management fields are ignored, including unknown future fields. Return null
+ * when no #id is found. This does not validate publish eligibility or Front Matter;
+ * invalid/duplicate #id or #slug values are rejected to protect preview link names.
  */
 export function parsePreviewMetadata(markdown) {
   const opening = /^---(?:\r\n|\n)/.exec(markdown);
@@ -39,22 +40,26 @@ export function parsePreviewMetadata(markdown) {
     const space = /^[ \t\r\n]*/.exec(markdown.slice(offset))[0];
     const start = offset + space.length;
     const rest = markdown.slice(start);
-    if (!META_START.test(rest)) break;
+    const key = META_KEY.exec(rest)?.[1];
+    if (!key) break;
+    const relevant = key === 'id' || key === 'slug';
     const closingComment = markdown.indexOf('-->', start + 4);
-    if (closingComment < 0) throw new Error('Unterminated management comment');
-    const comment = markdown.slice(start, closingComment + 3);
-    const match = META_VALUE.exec(comment);
-    if (!match) throw new Error('Invalid management comment syntax');
-    const [, key, raw] = match;
-    const value = raw.trim();
-    if (!value) throw new Error(`Empty management comment: ${key}`);
-    if (values.has(key)) throw new Error(`Duplicate management comment: ${key}`);
-    values.set(key, value);
+    if (closingComment < 0) {
+      if (relevant) throw new Error(`Unterminated preview metadata comment: ${key}`);
+      break;
+    }
+    if (relevant) {
+      const comment = markdown.slice(start, closingComment + 3);
+      const match = PREVIEW_VALUE.exec(comment);
+      if (!match) throw new Error(`Invalid preview metadata comment: ${key}`);
+      const value = match[2].trim();
+      if (!value) throw new Error(`Empty preview metadata comment: ${key}`);
+      if (values.has(key)) throw new Error(`Duplicate preview metadata comment: ${key}`);
+      values.set(key, value);
+    }
     offset = closingComment + 3;
   }
   if (!values.has('id')) return null;
-  if (!['active', 'erased', 'hold'].includes(values.get('state')))
-    throw new Error('Missing or invalid source state');
   const articleId = normalizeArticleId(values.get('id'));
   const slug = values.get('slug') ?? `new-${articleId}`;
   if (!SLUG.test(slug)) throw new Error(`Invalid preview slug: ${slug}`);
@@ -86,7 +91,8 @@ async function listArticles(directory) {
 }
 
 /**
- * Fully validate the authoring articles before touching /preview.
+ * Build the preview-only link plan before touching /preview.
+ * Checks file safety, #id/#slug values and collisions, not publisher metadata validity.
  * Returns filename/source pairs; duplicate normalized IDs and all slug collisions are errors.
  */
 export async function planPreviewLinks(authoringRoot) {
@@ -106,12 +112,7 @@ export async function planPreviewLinks(authoringRoot) {
     } catch (error) {
       throw new Error(`Invalid source ${file}: ${error.message}`, { cause: error });
     }
-    if (info === null) {
-      console.log(
-        `PREVIEW_SKIP: ${file} (no recognized Front Matter / leading #id)`
-      );
-      continue;
-    }
+    if (info === null) continue;
     if (identities.has(info.articleId)) {
       throw new Error(`Duplicate normalized article ID ${info.articleId}: ${identities.get(info.articleId)} and ${file}`);
     }
@@ -206,19 +207,13 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const previewRoot = process.env.PREVIEW_ROOT ?? '/preview';
   try {
     const count = await generateLinks(authoringRoot, previewRoot);
-    const articlesDir = path.join(previewRoot, 'articles');
-
-    for (const name of (await fs.readdir(articlesDir)).sort()) {
-      const link = path.join(articlesDir, name);
-      const target = await fs.readlink(link);
-      console.log(`PREVIEW_LINK: ${link} -> ${target}`);
+    const articles = path.join(previewRoot, 'articles');
+    for (const name of (await fs.readdir(articles)).sort()) {
+      const link = path.join(articles, name);
+      console.log(`PREVIEW_LINK: ${link} -> ${await fs.readlink(link)}`);
     }
-
-    const imageLink = path.join(previewRoot, 'images');
-    console.log(
-      `PREVIEW_LINK: ${imageLink} -> ${await fs.readlink(imageLink)}`
-    );
-
+    const imagesLink = path.join(previewRoot, 'images');
+    console.log(`PREVIEW_LINK: ${imagesLink} -> ${await fs.readlink(imagesLink)}`);
     console.log(`PREVIEW_LINKS_READY: ${count} articles`);
   } catch (error) {
     console.error(`PREVIEW_LINKS_ERROR: ${error.message}`);

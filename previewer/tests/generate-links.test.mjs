@@ -109,21 +109,77 @@ test('after successful generation, collisions do not remove previous links', asy
   assert.deepEqual(await generatedNames(), ['valid-preview-slug.md']);
 });
 
-test('invalid UUID, slug, state, and malformed/duplicate management comments reject', async () => {
+test('invalid UUID, slug, malformed or duplicate preview metadata reject', async () => {
   const samples = [
     markdown('not-a-uuid', undefined),
     markdown(ID1, '../traversal'),
     markdown(ID1, 'short'),
-    FRONT + `<!-- #id:${ID1} -->\nBody`,
-    FRONT + `<!-- #id:${ID1} -->\n<!-- #state:hold -->\n<!-- #slug:duplicate-slug -->\n<!-- #slug:duplicate-slug -->`,
-    FRONT + `<!-- #id:${ID1} -->\n<!-- #state:hold -->\n<!-- #unrecognized:x -->`,
-    FRONT + `<!-- #id:${ID1} -->\n<!-- #state:hold -->\n<!-- #slug: -->`,
+    FRONT + `<!-- #id:${ID1} -->\n<!-- #id:${ID2} -->`,
+    FRONT + `<!-- #id:${ID1} -->\n<!-- #slug:duplicate-slug -->\n<!-- #slug:duplicate-slug -->`,
+    FRONT + `<!-- #id:${ID1} -->\n<!-- #slug: -->`,
+    FRONT + `<!-- #id ${ID1} -->`,
+    FRONT + `<!-- #id:${ID1} -->\n<!-- #slug wrong-value -->`,
   ];
   for (const content of samples) {
     const file = await article('broken.md', content);
     await assert.rejects(planPreviewLinks(authoring));
     await fs.unlink(file);
   }
+});
+
+test('only id and slug are parsed; other management fields are ignored', async () => {
+  const file = await article('future.md', FRONT +
+    '<!-- #state:invalid-future-state -->\n' +
+    '<!-- #new-publisher-field:one -->\n' +
+    '<!-- #id-extension:not-an-id -->\n' +
+    '<!-- #id:' + ID1 + ' -->\n' +
+    '<!-- #release:not-an-integer -->\n' +
+    '<!-- #new-publisher-field:two -->\n' +
+    '<!-- #slug:valid-preview-slug -->\n' +
+    '<!-- #observation-override:not-json -->\n' +
+    'Body');
+  assert.deepEqual(parsePreviewMetadata(await fs.readFile(file, 'utf8')), {
+    articleId: ID1, slug: 'valid-preview-slug',
+  });
+  assert.equal(await generateLinks(authoring, preview), 1);
+  assert.deepEqual(await generatedNames(), ['valid-preview-slug.md']);
+});
+
+test('missing state and unknown management syntax do not affect synthetic slug', async () => {
+  const file = await article('draft.md', FRONT +
+    '<!-- #future-field some future syntax -->\n' +
+    `<!-- #id:${ID2} -->\n` +
+    '<!-- #future-field: -->\n' +
+    'Draft body');
+  assert.deepEqual(parsePreviewMetadata(await fs.readFile(file, 'utf8')), {
+    articleId: ID2, slug: `new-${ID2}`,
+  });
+  assert.equal(await generateLinks(authoring, preview), 1);
+  assert.deepEqual(await generatedNames(), [`new-${ID2}.md`]);
+});
+
+test('ordinary HTML comments end the leading metadata region', async () => {
+  const notManaged = FRONT + '<!-- ordinary -->\n' + `<!-- #id:${ID1} -->\n`;
+  assert.equal(parsePreviewMetadata(notManaged), null);
+  const noLateSlug = FRONT + `<!-- #id:${ID1} -->\n` +
+    '<!-- ordinary -->\n' + '<!-- #slug:valid-preview-slug -->\n';
+  assert.deepEqual(parsePreviewMetadata(noLateSlug), {
+    articleId: ID1, slug: `new-${ID1}`,
+  });
+});
+
+test('CLI prints installed symlink destinations after successful generation', async () => {
+  const file = await article('a.md', FRONT + `<!-- #id:${ID1} -->\n`);
+  const program = fileURLToPath(new URL('../generate-links.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [program], {
+    env: { ...process.env, AUTHORING_ROOT: authoring, PREVIEW_ROOT: preview },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`PREVIEW_LINK: .*new-${ID1}\\.md`));
+  assert.ok(result.stdout.includes(`-> ${file}`));
+  assert.ok(result.stdout.includes(`PREVIEW_LINK: ${path.join(preview, 'images')} -> ${path.join(authoring, 'images')}`));
+  assert.ok(result.stdout.includes('PREVIEW_LINKS_READY: 1 articles'));
 });
 
 test('unsafe source filesystem entries and missing images root reject', async () => {
