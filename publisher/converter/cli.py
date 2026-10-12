@@ -11,6 +11,7 @@ import traceback
 from checker.create_preflight import PreflightStatus
 from checker.errors import LocalApplyError
 from converter import workflow
+from converter.lint import LintError, lint_sources
 from converter.git_inspection import GuardError
 from converter.preflight_integration import PreflightOutcome
 
@@ -40,7 +41,35 @@ def _parser() -> argparse.ArgumentParser:
   convert.add_argument(
     "--article-root", required=True, type=_article_root, metavar="PATH",
     help="記事 repository の authoring worktree root（必須）")
+  lint = commands.add_parser(
+    "lint", allow_abbrev=False, help="現在の記事 source を読み取り専用で検証します。")
+  lint.add_argument("--article-root", required=True, type=_article_root, metavar="PATH")
+  scope = lint.add_mutually_exclusive_group(required=True)
+  scope.add_argument("--all", action="store_true", help="articles/ 以下を再帰的に検証します。")
+  scope.add_argument("--article", action="append", metavar="PATH",
+                     help="articles/ 以下の repository 相対パス（複数指定可）")
   return parser
+
+
+def _lint(args: argparse.Namespace) -> int:
+  """lint の失敗を変換の復旧案内から分離して表示します。"""
+  try:
+    result = lint_sources(args.article_root, all_articles=args.all,
+                          articles=tuple(args.article or ()))
+    for item in result.diagnostics:
+      print(f"{item.path}: {item.severity} [{item.code}]: {item.message}", file=sys.stderr)
+    print(f"lint: scope={result.scope} articles={result.article_count} errors={result.error_count}")
+    print("source のローカル検証が完了しました。公開準備の判定ではありません。")
+    return 1 if result.error_count else 0
+  except KeyboardInterrupt:
+    print("INTERRUPTED: lint を中断しました。", file=sys.stderr)
+    return ExitCode.INTERRUPTED
+  except LintError as exc:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    return ExitCode.ERROR
+  except Exception as exc:
+    traceback.print_exception(exc, file=sys.stderr)
+    return ExitCode.ERROR
 
 
 def _diagnostics(outcome: PreflightOutcome) -> list[str]:
@@ -100,8 +129,10 @@ def main(argv: list[str] | None = None) -> int:
   引数エラーは SystemExit を送出します。Apply 失敗、未知の例外、中断では
   部分変更の可能性を案内し、再試行や復旧操作は実行しません。
   """
+  args = _parser().parse_args(argv)
+  if args.command == "lint":
+    return _lint(args)
   try:
-    args = _parser().parse_args(argv)
     outcome = workflow.run_convert(args.article_root)
     if outcome.preflight.result is not PreflightStatus.OK:
       print("\n".join(_diagnostics(outcome)), file=sys.stderr)

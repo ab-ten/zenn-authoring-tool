@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -377,3 +378,96 @@ class ConverterCliTests(unittest.TestCase):
     self.assertIn('summary interrupted', stderr)
     self.assert_recovery(stderr)
     self.runner.assert_called_once_with(ROOT)
+
+  def test_lint_help_and_required_arguments(self):
+    code, stdout, stderr = self.invoke(['lint', '--help'])
+    self.assertEqual(code, 0)
+    for option in ('--article-root', '--all', '--article'):
+      self.assertIn(option, stdout)
+    self.assertEqual(stderr, '')
+    for argv in (['lint', '--all'], ['lint', '--article-root', str(ROOT)],
+                 ['lint', '--article-root', str(ROOT), '--all', '--article', 'articles/a.md'],
+                 ['lint', '--article-root', '', '--all']):
+      with self.subTest(argv=argv):
+        code, _, stderr = self.invoke(argv)
+        self.assertEqual(code, 2)
+        self.assertNotIn('部分変更', stderr)
+    self.runner.assert_not_called()
+
+  def test_lint_all_summary_and_exit_zero(self):
+    from converter.lint import LintResult
+    with patch.object(cli, 'lint_sources', return_value=LintResult('all', 3, ())) as lint:
+      code, stdout, stderr = self.invoke(['lint', '--article-root', str(ROOT), '--all'])
+    self.assertEqual(code, 0)
+    self.assertIn('lint: scope=all articles=3 errors=0', stdout)
+    self.assertIn('公開準備の判定ではありません', stdout)
+    self.assertEqual(stderr, '')
+    for text in ('SUCCESS', 'COMMIT_READY', 'commit/push', 'ローカル変換が完了'):
+      self.assertNotIn(text, stdout)
+    lint.assert_called_once_with(ROOT, all_articles=True, articles=())
+    self.runner.assert_not_called()
+
+  def test_lint_repeated_targets_and_validation_exit_one(self):
+    from converter.lint import LintDiagnostic, LintResult
+    diagnostic = LintDiagnostic('articles/a.md', 'error', 'INVALID_UUID', 'Invalid source UUID')
+    with patch.object(cli, 'lint_sources', return_value=LintResult('selected', 2, (diagnostic,))) as lint:
+      code, stdout, stderr = self.invoke(['lint', '--article-root', str(ROOT),
+        '--article', 'articles/a.md', '--article', 'articles/nested/b.md'])
+    self.assertEqual(code, 1)
+    self.assertIn('scope=selected articles=2 errors=1', stdout)
+    self.assertEqual(stderr, 'articles/a.md: error [INVALID_UUID]: Invalid source UUID\n')
+    lint.assert_called_once_with(ROOT, all_articles=False,
+      articles=('articles/a.md', 'articles/nested/b.md'))
+    self.runner.assert_not_called()
+
+  def test_lint_failures_and_interrupt_never_print_deploy_recovery(self):
+    from converter.lint import LintError
+    for error, expected in ((LintError('unsafe target'), 2),
+                            (ValueError('unexpected value'), 2),
+                            (LocalApplyError('unexpected local validation error'), 2),
+                            (RuntimeError('unexpected failure'), 2),
+                            (KeyboardInterrupt(), 130)):
+      with self.subTest(error=error), patch.object(cli, 'lint_sources', side_effect=error):
+        code, stdout, stderr = self.invoke(['lint', '--article-root', str(ROOT), '--all'])
+      self.assertEqual(code, expected)
+      self.assertEqual(stdout, '')
+      self.assertTrue(stderr)
+      for text in ('部分変更', 'commit/push', 'Git status', 'pending_next_state',
+                   '手動で復旧', 'SUCCESS', 'COMMIT_READY'):
+        self.assertNotIn(text, stderr)
+    self.runner.assert_not_called()
+
+  def test_lint_reporting_failure_does_not_print_recovery(self):
+    from converter.lint import LintResult
+    with patch.object(cli, 'lint_sources', return_value=LintResult('all', 0, ())), patch(
+        'converter.cli.print', side_effect=RuntimeError('output failed')):
+      code, stdout, stderr = self.invoke(['lint', '--article-root', str(ROOT), '--all'])
+    self.assertEqual(code, 2)
+    self.assertEqual(stdout, '')
+    self.assertIn('output failed', stderr)
+    self.assertNotIn('部分変更', stderr)
+    self.runner.assert_not_called()
+
+  def test_lint_real_api_validation_and_target_errors(self):
+    from converter.git_inspection import Worktrees
+    with tempfile.TemporaryDirectory() as temporary:
+      root = Path(temporary)
+      (root / 'articles').mkdir()
+      (root / 'articles/invalid.md').write_text('Invalid Markdown', encoding='utf-8')
+      with patch('converter.lint.identify_worktrees',
+                 return_value=Worktrees(root, root / '_deploy')):
+        prefix = ['lint', '--article-root', str(root)]
+        code, stdout, stderr = self.invoke(prefix + ['--all'])
+        self.assertEqual(code, 1)
+        self.assertIn('articles=1 errors=1', stdout)
+        self.assertIn('articles/invalid.md: error [SOURCE_PARSE]', stderr)
+        for target in ('articles/missing.md', 'articles/../invalid.md'):
+          code, stdout, stderr = self.invoke(prefix + ['--article', target])
+          self.assertEqual(code, 2)
+          self.assertEqual(stdout, '')
+          self.assertNotIn('部分変更', stderr)
+        (root / 'articles/link.md').symlink_to(root / 'articles/invalid.md')
+        code, _, stderr = self.invoke(prefix + ['--article', 'articles/link.md'])
+        self.assertEqual(code, 2)
+        self.assertIn('Refusing symlink', stderr)
+    self.runner.assert_not_called()
