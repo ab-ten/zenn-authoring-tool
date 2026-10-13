@@ -1,6 +1,7 @@
 """隔離 Git worktree で workflow の接続と書き込み境界を検証します。"""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout, redirect_stderr
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -11,7 +12,7 @@ from checker import atomic_write, unified_preflight
 from checker.create_observation import ArticleResponse
 from checker.create_preflight import PreflightResult, PreflightStatus
 from checker.errors import LocalApplyError
-from converter import workflow, apply_integration, preflight_integration, planning
+from converter import cli, workflow, apply_integration, preflight_integration, planning
 from converter.models import PublishPlan
 from converter.preflight_integration import PreflightOutcome
 from converter.source_parser import parse_source
@@ -278,6 +279,90 @@ class WorkflowTests(unittest.TestCase):
   def test_local_validation_prevents_preflight_apply(self):
     self.write_source(source(release=2))
     self.local_failure('release')
+
+  def invoke_cli(self, command, *arguments):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+      code = cli.main([command, '--article-root', str(self.root), *arguments])
+    return code, stdout.getvalue(), stderr.getvalue()
+
+  def test_title_errors_in_lint_and_convert_cli_before_any_mutation(self):
+    invalid_titles = (
+      ('', 'requires string title'),
+      ('title: null\n', 'requires string title'),
+      ('title: 1\n', 'requires string title'),
+      ('title: true\n', 'requires string title'),
+      ('title: []\n', 'requires string title'),
+      ('title: ""\n', 'title must be non-empty'),
+      *((f'title: {json.dumps(title)}\n', '70 UTF-16 code units')
+        for title in ('a' * 71, 'あ' * 71, '😀' * 36, 'a' * 69 + '😀')),
+    )
+    for state in ('hold', 'active', 'erased'):
+      for title_line, message in invalid_titles:
+        with self.subTest(state=state, title=title_line):
+          self.write_source(source(state=state).replace('title: Test\n', title_line))
+          before = snapshot(self.root)
+          with self.no_writes(), patch.object(unified_preflight, 'preflight_plan') as remote, patch.object(
+              workflow, 'apply_publish') as apply:
+            for scope in (('--all',), ('--article', 'articles/human filename.md')):
+              code, stdout, stderr = self.invoke_cli('lint', *scope)
+              self.assertEqual(code, 1)
+              self.assertIn('articles=1 errors=1', stdout)
+              self.assertIn('articles/human filename.md: error [SOURCE_PARSE]', stderr)
+              self.assertIn(message, stderr)
+            code, stdout, stderr = self.invoke_cli('convert')
+            self.assertEqual(code, 2)
+            self.assertEqual(stdout, '')
+            self.assertIn('Invalid source', stderr)
+            self.assertIn('human filename.md', stderr)
+            self.assertIn(message, stderr)
+          remote.assert_not_called()
+          apply.assert_not_called()
+          self.assertEqual(snapshot(self.root), before)
+
+  def test_lint_cli_accepts_valid_title_boundaries_in_all_states(self):
+    for state in ('hold', 'active', 'erased'):
+      for title in (' ', '\t', 'a' * 70, 'あ' * 70, '😀' * 35, 'a' * 68 + '😀'):
+        with self.subTest(state=state, title=title):
+          self.write_source(source(state=state).replace('title: Test',
+                            f'title: {json.dumps(title)}'))
+          before = snapshot(self.root)
+          with self.no_writes():
+            code, stdout, stderr = self.invoke_cli('lint', '--all')
+          self.assertEqual(code, 0)
+          self.assertIn('articles=1 errors=0', stdout)
+          self.assertEqual(stderr, '')
+          self.assertEqual(snapshot(self.root), before)
+
+  def test_convert_cli_accepts_valid_title_boundaries_for_hold_and_erased(self):
+    self.confirmed('erased')
+    for state in ('hold', 'erased'):
+      for title in (' ', '\t', 'a' * 70, 'あ' * 70, '😀' * 35, 'a' * 68 + '😀'):
+        with self.subTest(state=state, title=title):
+          self.write_source(source(state=state, release=3).replace('title: Test',
+                            f'title: {json.dumps(title)}'))
+          before = snapshot(self.root)
+          with self.no_writes():
+            code, _, stderr = self.invoke_cli('convert')
+          self.assertEqual(code, 0, stderr)
+          self.assertEqual(stderr, '')
+          self.assertEqual(snapshot(self.root), before)
+
+  def test_convert_cli_publishes_eligible_article_at_utf16_title_limit(self):
+    markdown = source().replace('title: Test', f'title: {json.dumps("😀" * 35)}')
+    self.write_source(markdown)
+    fetch = Mock(return_value=ArticleResponse(404))
+    real_preflight = workflow.preflight_publish
+    with patch.object(workflow, 'preflight_publish', side_effect=lambda root, **kwargs:
+                      real_preflight(root, now=NOW, fetch_article=fetch)):
+      code, _, stderr = self.invoke_cli('convert')
+    self.assertEqual(code, 0, stderr)
+    self.assertEqual(stderr, '')
+    fetch.assert_called_once_with(SLUG)
+    self.assertEqual((self.deploy / 'articles' / f'{SLUG}.md').read_bytes(),
+                     parse_source(markdown).record.candidate_content.encode())
+    self.assertEqual(json.loads(self.ledger_path.read_bytes())['pending_next_state'][ID],
+                     {'operation': 'CREATE', 'slug': SLUG, 'state': 'active', 'release': 1})
 
   def test_dirty_deploy_prevents_planning(self):
     (self.deploy / 'dirty').write_bytes(b'dirty')

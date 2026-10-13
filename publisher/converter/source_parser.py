@@ -73,10 +73,19 @@ def _front_matter(markdown: str) -> tuple[dict, int]:
   return fields, start + closing.end()
 
 
+def _utf16_length(value: str) -> int:
+  """JavaScript の String.length と同じ UTF-16 コード単位数を返します。"""
+  return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
+
+
 def _validate_front_matter(fields: dict, state: str | None = None) -> datetime | None:
   for key in ("title", "emoji", "type"):
     if not isinstance(fields.get(key), str):
       raise ValueError(f"Front Matter requires string {key}")
+  if not fields["title"]:
+    raise ValueError("Front Matter title must be non-empty")
+  if _utf16_length(fields["title"]) > 70:
+    raise ValueError("Front Matter title must not exceed 70 UTF-16 code units")
   if fields["type"] not in ("tech", "idea"):
     raise ValueError("Front Matter type must be tech or idea")
   if not isinstance(fields.get("topics"), list) or not all(

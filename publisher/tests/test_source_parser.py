@@ -188,6 +188,19 @@ class SourceParserTests(unittest.TestCase):
           else:
             self.assertEqual(parse_source(markdown).record.state, state)
 
+  def test_title_utf16_boundaries_and_whitespace_in_all_states(self):
+    for state in ("hold", "active", "erased"):
+      for title in (" ", "\t", "a" * 70, "あ" * 70, "😀" * 35,
+                    "a" * 68 + "😀", "\ud800" * 70):
+        with self.subTest(state=state, title=repr(title)):
+          front = FRONT.replace('"Test"', json.dumps(title))
+          parsed = parse_source(source(state=state, front=front))
+          self.assertEqual(parsed.record.candidate_content, front + "Body\n")
+      for title in ("", "a" * 71, "あ" * 71, "😀" * 36, "a" * 69 + "😀"):
+        with self.subTest(state=state, title=repr(title)), self.assertRaisesRegex(
+            ValueError, "Front Matter title"):
+          parse_source(source(state=state, front=FRONT.replace('"Test"', json.dumps(title))))
+
   def test_candidate_metadata_changes_do_not_change_content(self):
     first = parse_source(source(state="hold", release=1))
     second = parse_source(source(state="active", release=2))
