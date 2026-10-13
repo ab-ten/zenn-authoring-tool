@@ -150,7 +150,8 @@ The article is not a valid managed source when required authoring information is
 
 - missing `{article-id}`;
 - duplicate `{article-id}`;
-- malformed Front Matter; or
+- malformed Front Matter;
+- missing, empty, or overlong Front Matter `title` (over 70 UTF-16 code units); or
 - malformed management comments.
 
 ### End state

@@ -576,6 +576,12 @@ The converter performs this classification once. Later phases do not reclassify 
 
 Required Zenn Front Matter elements must be present.
 
+The Front Matter `title` must be a non-empty string. Its length must not exceed 70 UTF-16 code units, matching the JavaScript `String.length` used by Zenn's `validateTitleLength` validator. Both requirements apply to all managed source states (`hold`, `active`, and `erased`). Violations are errors during Publisher lint and Converter source validation, before deploy application.
+
+The title length limit is an upstream Zenn constraint, not an authoring-repository setting. It is not configured through deploy `config.json`.
+
+Upstream reference: [Zenn model title validators](https://github.com/zenn-dev/zenn-editor/blob/canary/packages/zenn-model/src/utils.ts) (`validateMissingTitle`, `validateTitleLength`).
+
 If source state is `active`, Front Matter must have `published: true`; otherwise conversion fails.
 
 #### `published_at`

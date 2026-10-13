@@ -18,7 +18,8 @@ python -m converter lint --article-root /article-repo \
 絶対パス、空・`.`・`..` のパス要素、バックスラッシュ、NUL、symlink、特殊ファイル、存在しない対象、`.md` 以外の対象を拒否します。
 全件列挙時は、拡張子にかかわらず `articles/` 以下の symlink と特殊ファイルを拒否します。
 
-Front Matter、管理コメント、UUID、state、active の `published: true`、`published_at` の書式と実在日時を検証します。
+Front Matter（`title` は必須の非空文字列かつ70 UTF-16コード単位以下）、管理コメント、UUID、state、active の `published: true`、`published_at` の書式と実在日時を検証します。
+
 slug と release は省略可能ですが、指定時は既存の slug 文法と正の整数表現を検証します。
 observation override は Checker のローカル表現検証を使用します。
 `--all` では、解析できた記事の UUID を正規化して重複を検出し、関係する全パスを報告します。
