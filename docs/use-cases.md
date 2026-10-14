@@ -44,10 +44,11 @@ Create the authoring/deploy worktree structure, establish the repository's Zenn 
 
    `git worktree add --orphan -b deploy _deploy`
 
-5. Prepare:
+5. Prepare the management directories in the deploy worktree:
+   - `/_deploy/.zenn-authoring/`
+   - `/_deploy/.zenn-authoring/released/`
 
-   `/_deploy/.zenn-authoring/`
-   `/_deploy/.zenn-authoring/released/`
+   Leave the deploy worktree free of untracked files before initialization.
 
 6. Run:
 
@@ -59,11 +60,17 @@ Create the authoring/deploy worktree structure, establish the repository's Zenn 
    - creates a canonical empty `ledger.json`;
    - creates `config.json`.
 
-8. Review the deploy-worktree diff.
+8. After successful checker initialization, prepare the Zenn books directory:
+   - create `/_deploy/books/`;
+   - create an empty `/_deploy/books/.gitkeep` file so that Git can track the directory.
 
-9. Commit the initial management files using `[skip ci]`.
+   The `.gitkeep` file must be created after initialization to avoid violating the checker's deploy-worktree cleanliness requirement.
 
-10. Push the deploy branch.
+9. Review the deploy-worktree changes, including management files and `books/.gitkeep`.
+
+10. Commit the initial management files and `books/.gitkeep` using `[skip ci]`.
+
+11. Push the deploy branch.
 
 ### Acceptance Criteria
 
@@ -73,6 +80,7 @@ Create the authoring/deploy worktree structure, establish the repository's Zenn 
 - the deploy worktree is clean after the initialization commit;
 - `/.zenn-authoring/config.json` is Git-managed;
 - `/.zenn-authoring/ledger.json` is Git-managed;
+- `/books/.gitkeep` is Git-managed in the deploy branch;
 - ledger `articles` is empty;
 - ledger `pending_next_state` is empty;
 - `{zenn-user-id}` has been resolved and stored;
@@ -89,6 +97,9 @@ Create the authoring/deploy worktree structure, establish the repository's Zenn 
   - config is not created.
 - deploy worktree contains unrelated dirty changes:
   - initialization fails before modifying management state.
+- `books/.gitkeep` is created as an untracked file before initialization:
+  - initialization fails due to the deploy-worktree cleanliness requirement;
+  - create the placeholder after successful initialization instead.
 - initialization stops after creation of the empty ledger but before config creation:
   - rerunning `init` may resume when the empty ledger is the only init-produced dirty change.
 - config is absent but a non-empty ledger exists:
@@ -110,7 +121,7 @@ Create the authoring/deploy worktree structure, establish the repository's Zenn 
 ### End state
 
 - authoring and deploy worktrees are established;
-- the deploy branch contains the initial management state;
+- the deploy branch contains the initial management state and the tracked `books/.gitkeep` placeholder;
 - configured `{zenn-user-id}` is the canonical own-user identity;
 - `ledger.json` is in canonical empty state;
 - both worktrees are clean;
