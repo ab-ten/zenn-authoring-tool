@@ -47,6 +47,7 @@ Create the authoring/deploy worktree structure, establish the repository's Zenn 
 5. Prepare:
 
    `/_deploy/.zenn-authoring/`
+   `/_deploy/.zenn-authoring/released/`
 
 6. Run:
 
